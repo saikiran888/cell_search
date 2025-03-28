@@ -1,0 +1,935 @@
+package qupath.ext.template
+
+import javafx.scene.control.*
+import javafx.scene.control.Alert.AlertType
+import qupath.lib.common.Version
+import qupath.lib.gui.QuPathGUI
+import qupath.lib.gui.extensions.QuPathExtension
+import qupath.lib.objects.PathObject
+import qupath.lib.objects.classes.PathClassFactory
+import org.apache.commons.math3.ml.distance.EuclideanDistance
+import java.sql.Connection
+import java.sql.DriverManager
+import java.sql.PreparedStatement
+import java.sql.ResultSet
+import java.util.Properties
+import java.net.URL
+import java.sql.*
+import java.util.logging.*
+import javafx.application.Platform
+import javafx.scene.control.Alert
+import javafx.scene.control.ButtonType
+import javafx.scene.control.ButtonBar.ButtonData
+import javafx.geometry.Insets
+import javafx.stage.FileChooser
+import qupath.lib.objects.classes.PathClass
+import qupath.lib.roi.ROIs
+import qupath.lib.objects.PathAnnotationObject
+import qupath.lib.measurements.MeasurementList
+// Import AWT classes (using alias to avoid confusion with JavaFX Color)
+import java.awt.Color as AwtColor
+import java.awt.BasicStroke
+// JavaFX UI layout classes
+import javafx.scene.layout.*
+import javafx.geometry.Pos
+import javafx.scene.paint.Color as FxColor
+import java.awt.Color
+import java.net.URLClassLoader
+import java.sql.SQLException
+import java.sql.Statement
+import java.io.File
+import com.mysql.cj.jdbc.Driver
+
+/**
+ * A QuPath extension that demonstrates a 'Cell Search Engine' with:
+ *  - Quick Search (Morphology, Marker, Combined, Neighborhood)
+ *  - Comprehensive Search (Model Selection, MySQL, CSV-based clustering)
+ *
+ * This version prompts the user to choose between Brain and Liver tissue types.
+ * If Liver is selected, it uses the liver channels provided.
+ */
+class DemoGroovyExtension implements QuPathExtension {
+
+	String name = "Cell Search Engine"
+	String description = "Offers quick and comprehensive cell similarity searches."
+	Version QuPathVersion = Version.parse("v0.4.0")
+
+	@Override
+	void installExtension(QuPathGUI qupath) {
+		def mainMenu = qupath.getMenu("Extensions>" + name, true)
+
+		// --- QUICK CELL SEARCH ---
+		def quickSearchMenu = new Menu("Quick Cell Search")
+
+		def morphologyItem = new MenuItem("Morphology-based Search")
+		morphologyItem.setOnAction(e -> {
+			runQuickSearch(qupath, "morphology")
+		})
+
+		def markerItem = new MenuItem("Marker-based Search")
+		markerItem.setOnAction(e -> {
+			runQuickSearch(qupath, "marker")
+		})
+
+		def combinedItem = new MenuItem("Combined Search")
+		combinedItem.setOnAction(e -> {
+			runQuickSearch(qupath, "combined")
+		})
+
+		def neighborhoodItem = new MenuItem("Similar Neighborhood Search")
+		neighborhoodItem.setOnAction(e -> {
+			runNeighborhoodSearch(qupath)
+		})
+
+		def cellCountItem = new MenuItem("Cell Count")
+		cellCountItem.setOnAction(e -> {
+			runCellCount(qupath)
+		})
+
+		quickSearchMenu.getItems().addAll(morphologyItem, markerItem, combinedItem, neighborhoodItem, cellCountItem)
+
+		// --- COMPREHENSIVE SEARCH ---
+		def comprehensiveMenu = new Menu("Comprehensive Search")
+
+		def modelSelectionItem = new MenuItem("Model Selection (.h5)")
+		modelSelectionItem.setOnAction(e -> {
+			loadH5Model(qupath)
+		})
+
+		def sqliteSearchItem = new MenuItem("SQLite Cell Search")
+		sqliteSearchItem.setOnAction(e -> {
+			SQLiteCellSearch.runCellSearch(qupath)
+		})
+		comprehensiveMenu.getItems().add(sqliteSearchItem)
+
+		def csvClusterItem = new MenuItem("Community Search")
+		csvClusterItem.setOnAction(e -> runCSVClusterSearch(qupath))
+		comprehensiveMenu.getItems().add(csvClusterItem)
+
+		mainMenu.getItems().addAll(quickSearchMenu, comprehensiveMenu)
+	}
+
+	// Helper method to prompt the user for tissue type selection.
+	private static String promptTissueType(QuPathGUI qupath) {
+		def choices = ["Brain", "Liver"]
+		ChoiceDialog<String> dialog = new ChoiceDialog<>("Brain", choices)
+		dialog.setTitle("Tissue Type Selection")
+		dialog.setHeaderText("Select Tissue Type")
+		dialog.setContentText("Choose Tissue Type:")
+		Optional<String> result = dialog.showAndWait()
+		return result.isPresent() ? result.get() : "Brain"
+	}
+
+	// --- QUICK SEARCH LOGIC ---
+	private static void runQuickSearch(QuPathGUI qupath, String searchType) {
+		def imageData = qupath.getImageData()
+		if (imageData == null) {
+			new Alert(AlertType.WARNING, "No image data available.").showAndWait()
+			return
+		}
+		def hierarchy = imageData.getHierarchy()
+		def selectedCells = hierarchy.getSelectionModel().getSelectedObjects().findAll { it.isCell() }
+		if (selectedCells.isEmpty()) {
+			new Alert(AlertType.WARNING, "Please select a single cell before running the search!").showAndWait()
+			return
+		}
+		def targetCell = selectedCells[0]
+		println "Selected cell: ID = ${targetCell.getID()}"
+
+		// For marker or combined search, prompt for tissue type.
+		String tissueType = "Brain"
+		if (searchType == "marker" || searchType == "combined") {
+			tissueType = promptTissueType(qupath)
+			println "Tissue type selected: ${tissueType}"
+		}
+
+		def cells = hierarchy.getDetectionObjects().findAll { it.isCell() }
+		double[] targetFeatures
+		switch (searchType) {
+			case "morphology":
+				targetFeatures = extractMorphologicalFeatures(targetCell)
+				break
+			case "marker":
+				targetFeatures = extractMarkerFeatures(targetCell, tissueType)
+				break
+			case "combined":
+				targetFeatures = extractCombinedFeatures(targetCell, tissueType)
+				break
+			default:
+				targetFeatures = extractMarkerFeatures(targetCell, tissueType)
+		}
+
+		// Compute Euclidean distances from target cell to every other cell.
+		def distances = cells.findAll { it != targetCell }.collect { cell ->
+			double[] cellFeatures
+			switch (searchType) {
+				case "morphology":
+					cellFeatures = extractMorphologicalFeatures(cell)
+					break
+				case "marker":
+					cellFeatures = extractMarkerFeatures(cell, tissueType)
+					break
+				case "combined":
+					cellFeatures = extractCombinedFeatures(cell, tissueType)
+					break
+				default:
+					cellFeatures = extractMarkerFeatures(cell, tissueType)
+			}
+			double dist = new EuclideanDistance().compute(targetFeatures, cellFeatures)
+			[cell, dist]
+		}
+
+		distances.sort { it[1] }
+		def topCells = distances.take(100).collect { it[0] }
+		def allSelected = [targetCell] + topCells
+
+		def redClass = PathClassFactory.getPathClass("Highlighted-Red")
+		allSelected.each { it.setPathClass(redClass) }
+
+		def selectionModel = hierarchy.getSelectionModel()
+		selectionModel.clearSelection()
+		selectionModel.setSelectedObjects(allSelected, targetCell)
+
+		println "Quick search '${searchType}' complete. Highlighted ${topCells.size()} similar cells."
+	}
+
+	private static void runCellCount(QuPathGUI qupath) {
+		def imageData = qupath.getImageData()
+		if (imageData == null) {
+			new Alert(Alert.AlertType.WARNING, "No image data available.").showAndWait()
+			return
+		}
+		def hierarchy = imageData.getHierarchy()
+		def selectedCells = hierarchy.getSelectionModel().getSelectedObjects().findAll { it.isCell() }
+		if (selectedCells.isEmpty()) {
+			new Alert(Alert.AlertType.WARNING, "Please select a cell before running cell count!").showAndWait()
+			return
+		}
+
+		// Prompt for tissue type so that channels can be set accordingly.
+		String tissueType = promptTissueType(qupath)
+		def channels = []
+		if (tissueType == "Brain") {
+			channels = ["Cell: DAPI mean", "Cell: NeuN mean", "Cell: NFH mean", "Cell: NFM mean", "Cell: MAP2 mean", "Cell: Synaptophysin mean", "Cell: CNPase mean", "Cell: NBP mean"]
+		} else if (tissueType == "Liver") {
+			channels = [
+					'Cell: DAPI mean',
+					'Cell: CD4 - Cy5 mean',
+					'Cell: PD1 - TRITC mean',
+					'Cell: FOXP3 - Cy5 mean',
+					'Cell: CD31 - TRITC mean',
+					'Cell: CD86 - Cy5 mean',
+					'Cell: B220 - TRITC mean',
+					'Cell: CD8 - Cy5 mean',
+					'Cell: aSMA - TRITC mean',
+					'Cell: PDL1 - Cy5 mean',
+					'Cell: Ki67 - TRITC mean',
+					'Cell: GZMB - Cy5 mean',
+					'Cell: FAP - Cy5 mean',
+					'Cell: CTLA4 - Cy5 mean',
+					'Cell: CD11c - Cy5 mean',
+					'Cell: CD3e - Cy5 mean',
+					'Cell: CD206 - Cy5 mean',
+					'Cell: F480 - Cy5 mean',
+					'Cell: CD11b - Cy5 mean',
+					'Cell: CD45 - Cy5 mean',
+					'Cell: Panck - Cy5 mean',
+					'Cell: Col1A1 - TRITC mean'
+			]
+		}
+
+		def allCells = hierarchy.getDetectionObjects().findAll { it.isCell() }
+		def counts = [:]
+		channels.each { channel ->
+			counts[channel] = allCells.count { cell ->
+				def value = cell.getMeasurementList().getMeasurementValue(channel) ?: 0.0
+				return value > 0
+			}
+		}
+
+		def message = "Cell Counts per Channel (" + tissueType + "):\n"
+		channels.each { channel ->
+			message += "${channel}: ${counts[channel]}\n"
+		}
+		new Alert(Alert.AlertType.INFORMATION, message).showAndWait()
+	}
+
+	private static void runNeighborhoodSearch(QuPathGUI qupath) {
+		def imageData = qupath.getImageData()
+		if (imageData == null) {
+			new Alert(Alert.AlertType.WARNING, "No image data available.").showAndWait()
+			return
+		}
+		def hierarchy = imageData.getHierarchy()
+		def selectedCells = hierarchy.getSelectionModel().getSelectedObjects().findAll { it.isCell() }
+		if (selectedCells.isEmpty()) {
+			new Alert(Alert.AlertType.WARNING, "Please select a single cell before running neighborhood search!").showAndWait()
+			return
+		}
+		def targetCell = selectedCells[0]
+		println "Neighborhood search for cell: ID = ${targetCell.getID()}"
+
+		// Prompt for tissue type selection (uses your helper method)
+		String tissueType = promptTissueType(qupath)
+		println "Tissue type selected: ${tissueType}"
+
+		// Define marker labels based on tissue type.
+		List<String> markerLabels = (tissueType == "Brain") ?
+				["DAPI", "NeuN", "NFH", "NFM", "MAP2", "Synaptophysin", "CNPase", "NBP"] :
+				["DAPI", "CD4 - Cy5", "PD1 - TRITC", "FOXP3 - Cy5", "CD31 - TRITC", "CD86 - Cy5", "B220 - TRITC", "CD8 - Cy5", "aSMA - TRITC", "PDL1 - Cy5", "Ki67 - TRITC", "GZMB - Cy5", "FAP - Cy5", "CTLA4 - Cy5", "CD11c - Cy5", "CD3e - Cy5", "CD206 - Cy5", "F480 - Cy5", "CD11b - Cy5", "CD45 - Cy5", "Panck - Cy5", "Col1A1 - TRITC"]
+
+		// Create marker checkboxes dynamically.
+		def markerCheckboxes = markerLabels.collect { new CheckBox(it) }
+		// "Select All" for marker selections.
+		CheckBox cbMarkerSelectAll = new CheckBox("Select All")
+		cbMarkerSelectAll.setOnAction {
+			boolean value = cbMarkerSelectAll.isSelected()
+			markerCheckboxes.each { it.setSelected(value) }
+		}
+		Label markerLabel = new Label("Marker Selections:")
+		markerLabel.setStyle("-fx-font-weight: bold;")
+
+		// Helper closure: partition a list of checkboxes into columns.
+		def partitionCheckboxes = { List<CheckBox> checkboxes, int numColumns ->
+			int itemsPerColumn = (int) Math.ceil(checkboxes.size() / (double) numColumns)
+			def columns = []
+			for (int i = 0; i < numColumns; i++) {
+				int start = i * itemsPerColumn
+				int end = Math.min(start + itemsPerColumn, checkboxes.size())
+				// Use the spread operator (*) to pass the sublist as varargs.
+				columns << new VBox(5, *checkboxes.subList(start, end))
+			}
+			return new HBox(10, *columns)
+		}
+		def markerHBox = partitionCheckboxes(markerCheckboxes, 4)
+		VBox markerBox = new VBox(5, markerLabel, cbMarkerSelectAll, markerHBox)
+
+		// --- Morphological Features (same for both tissue types) ---
+		CheckBox cbArea = new CheckBox("Area")
+		CheckBox cbPerimeter = new CheckBox("Perimeter")
+		CheckBox cbCircularity = new CheckBox("Circularity")
+		CheckBox cbMaxCaliper = new CheckBox("Max caliper")
+		CheckBox cbMinCaliper = new CheckBox("Min caliper")
+		CheckBox cbEccentricity = new CheckBox("Eccentricity")
+		VBox morphCol1 = new VBox(5, cbArea, cbPerimeter)
+		VBox morphCol2 = new VBox(5, cbCircularity, cbMaxCaliper)
+		VBox morphCol3 = new VBox(5, cbMinCaliper, cbEccentricity)
+		HBox morphHBox = new HBox(10, morphCol1, morphCol2, morphCol3)
+		CheckBox cbMorphSelectAll = new CheckBox("Select All")
+		cbMorphSelectAll.setOnAction {
+			boolean value = cbMorphSelectAll.isSelected()
+			[cbArea, cbPerimeter, cbCircularity, cbMaxCaliper, cbMinCaliper, cbEccentricity].each { it.setSelected(value) }
+		}
+		Label morphLabel = new Label("Morphological Features:")
+		morphLabel.setStyle("-fx-font-weight: bold;")
+		VBox morphBox = new VBox(5, morphLabel, cbMorphSelectAll, morphHBox)
+
+		// --- Surround Markers (using same marker labels) ---
+		def surroundCheckboxes = markerLabels.collect { new CheckBox(it) }
+		CheckBox cbSurroundSelectAll = new CheckBox("Select All")
+		cbSurroundSelectAll.setOnAction {
+			boolean value = cbSurroundSelectAll.isSelected()
+			surroundCheckboxes.each { it.setSelected(value) }
+		}
+		Label surroundLabel = new Label("Surround Markers:")
+		surroundLabel.setStyle("-fx-font-weight: bold;")
+		def surroundHBox = partitionCheckboxes(surroundCheckboxes, 4)
+		VBox surroundBox = new VBox(5, surroundLabel, cbSurroundSelectAll, surroundHBox)
+
+		// --- Additional Parameters ---
+		Label topNLabel = new Label("Top N:")
+		topNLabel.setStyle("-fx-font-weight: bold;")
+		TextField tfTopN = new TextField("200")
+		Label radiusLabel = new Label("Radius (micrometers):")
+		radiusLabel.setStyle("-fx-font-weight: bold;")
+		TextField tfRadius = new TextField("50")
+		Button btnGo = new Button("GO")
+		Button btnReset = new Button("Reset")
+		Button btnExport = new Button("Export CSV")
+
+		// --- Export CSV Handler ---
+		btnExport.setOnAction { event ->
+			def highlightedCells = hierarchy.getSelectionModel().getSelectedObjects().findAll { it.isCell() }
+			if (highlightedCells.isEmpty()) {
+				new Alert(Alert.AlertType.WARNING, "No highlighted cells to export.").showAndWait()
+				return
+			}
+			FileChooser fileChooser = new FileChooser()
+			fileChooser.setTitle("Save CSV")
+			fileChooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("CSV Files", "*.csv"))
+			def window = qupath.getViewer().getView().getScene().getWindow()
+			File file = fileChooser.showSaveDialog(window)
+			if (file == null) {
+				return
+			}
+			file.withPrintWriter { pw ->
+				pw.println("CentroidX,CentroidY")
+				highlightedCells.each { cell ->
+					def roi = cell.getROI()
+					pw.println("${roi.getCentroidX()},${roi.getCentroidY()}")
+				}
+			}
+			new Alert(Alert.AlertType.INFORMATION, "CSV exported successfully!").showAndWait()
+		}
+
+		HBox bottomRow = new HBox(10, radiusLabel, tfRadius, topNLabel, tfTopN, btnGo, btnReset, btnExport)
+		bottomRow.setAlignment(Pos.CENTER_RIGHT)
+		VBox dialogContent = new VBox(10, markerBox, morphBox, surroundBox, bottomRow)
+		dialogContent.setStyle("-fx-padding: 20px; -fx-spacing: 15px;")
+
+		Dialog<Void> dialog = new Dialog<>()
+		dialog.setTitle("Neighborhood Search Options")
+		dialog.setHeaderText("Configure neighborhood search parameters")
+		dialog.getDialogPane().setContent(dialogContent)
+		dialog.getDialogPane().getButtonTypes().add(ButtonType.CANCEL)
+
+		def circleAnnotationRef = null
+
+		btnGo.setOnAction { event ->
+			double radiusMicrons
+			try {
+				radiusMicrons = Double.parseDouble(tfRadius.getText())
+			} catch (Exception e) {
+				new Alert(Alert.AlertType.WARNING, "Invalid radius value.").showAndWait()
+				return
+			}
+			int topN
+			try {
+				topN = Integer.parseInt(tfTopN.getText())
+			} catch (Exception e) {
+				new Alert(Alert.AlertType.WARNING, "Invalid Top N value.").showAndWait()
+				return
+			}
+			def roi = targetCell.getROI()
+			double centerX = roi.getCentroidX()
+			double centerY = roi.getCentroidY()
+			double pixelSize = imageData.getServer().getPixelCalibration().getPixelWidthMicrons()
+			double radiusPixels = radiusMicrons / pixelSize
+
+			// Draw the circle ROI for visual reference.
+			def circleROI = ROIs.createEllipseROI(
+					centerX - radiusPixels,
+					centerY - radiusPixels,
+					2 * radiusPixels,
+					2 * radiusPixels,
+					roi.getImagePlane()
+			)
+			circleAnnotationRef = new PathAnnotationObject(circleROI)
+			def circleClass = PathClassFactory.getPathClass("Circle")
+			if (circleClass == null) {
+				circleClass = new qupath.lib.objects.classes.PathClass("Circle", Color.RED, 2.0)
+			}
+			circleAnnotationRef.setPathClass(circleClass)
+			hierarchy.addObject(circleAnnotationRef, false)
+			Platform.runLater {
+				qupath.getViewer().repaint()
+			}
+
+			def allCells = hierarchy.getDetectionObjects().findAll { it.isCell() }
+			def spatialCells = allCells.findAll { cell ->
+				double cellX = cell.getROI().getCentroidX()
+				double cellY = cell.getROI().getCentroidY()
+				double dx = cellX - centerX
+				double dy = cellY - centerY
+				return (dx * dx + dy * dy) <= (radiusPixels * radiusPixels)
+			}
+
+			def finalCells = []
+
+			boolean markerSelected = markerCheckboxes.any { it.isSelected() }
+			boolean morphSelected = [cbArea, cbPerimeter, cbCircularity, cbMaxCaliper, cbMinCaliper, cbEccentricity].any { it.isSelected() }
+
+			if (markerSelected && !morphSelected) {
+				// Marker-only filtering.
+				def selectedChannels = markerCheckboxes.findAll { it.isSelected() }*.getText().collect { "Cell: " + it + " mean" }
+				def targetVector = selectedChannels.collect { ch -> targetCell.getMeasurementList().getMeasurementValue(ch) ?: 0.0 }
+				def distances = allCells.collect { cell ->
+					def cellVector = selectedChannels.collect { ch -> cell.getMeasurementList().getMeasurementValue(ch) ?: 0.0 }
+					double d = new EuclideanDistance().compute(targetVector as double[], cellVector as double[])
+					[cell, d]
+				}
+				distances.sort { it[1] }
+				finalCells = distances.take(topN).collect { it[0] }
+				println "Marker-only filtering applied: selected ${finalCells.size()} similar cells (global search)."
+			} else if (morphSelected && !markerSelected) {
+				// Morphology-only filtering.
+				def selectedChannels = []
+				if (cbArea.isSelected()) { selectedChannels << "Cell: Area" }
+				if (cbPerimeter.isSelected()) { selectedChannels << "Cell: Perimeter" }
+				if (cbCircularity.isSelected()) { selectedChannels << "Cell: Circularity" }
+				if (cbMaxCaliper.isSelected()) { selectedChannels << "Cell: Max caliper" }
+				if (cbMinCaliper.isSelected()) { selectedChannels << "Cell: Min caliper" }
+				if (cbEccentricity.isSelected()) { selectedChannels << "Cell: Eccentricity" }
+				def targetVector = selectedChannels.collect { ch -> targetCell.getMeasurementList().getMeasurementValue(ch) ?: 0.0 }
+				def distances = allCells.collect { cell ->
+					def cellVector = selectedChannels.collect { ch -> cell.getMeasurementList().getMeasurementValue(ch) ?: 0.0 }
+					double d = new EuclideanDistance().compute(targetVector as double[], cellVector as double[])
+					[cell, d]
+				}
+				distances.sort { it[1] }
+				finalCells = distances.take(topN).collect { it[0] }
+				println "Morphology-only filtering applied: selected ${finalCells.size()} similar cells (global search)."
+			} else if (markerSelected && morphSelected) {
+				// Combined filtering.
+				def insideCells = spatialCells
+				if (insideCells.isEmpty()) {
+					println "No cells inside the circle for combined filtering; falling back to spatial filtering."
+					finalCells = spatialCells
+				} else {
+					def getCombinedVector = { cell ->
+						def vector = []
+						// Marker features from dynamically built checkboxes.
+						markerCheckboxes.each { cb ->
+							if (cb.isSelected()) {
+								vector << (cell.getMeasurementList().getMeasurementValue("Cell: " + cb.getText() + " mean") ?: 0.0)
+							}
+						}
+						// Morphological features.
+						if (cbArea.isSelected()) { vector << (cell.getMeasurementList().getMeasurementValue("Cell: Area") ?: 0.0) }
+						if (cbPerimeter.isSelected()) { vector << (cell.getMeasurementList().getMeasurementValue("Cell: Perimeter") ?: 0.0) }
+						if (cbCircularity.isSelected()) { vector << (cell.getMeasurementList().getMeasurementValue("Cell: Circularity") ?: 0.0) }
+						if (cbMaxCaliper.isSelected()) { vector << (cell.getMeasurementList().getMeasurementValue("Cell: Max caliper") ?: 0.0) }
+						if (cbMinCaliper.isSelected()) { vector << (cell.getMeasurementList().getMeasurementValue("Cell: Min caliper") ?: 0.0) }
+						if (cbEccentricity.isSelected()) { vector << (cell.getMeasurementList().getMeasurementValue("Cell: Eccentricity") ?: 0.0) }
+						return vector as double[]
+					}
+					def firstVec = getCombinedVector(insideCells[0])
+					def sumVector = new double[firstVec.length]
+					for (int i = 0; i < sumVector.length; i++) {
+						sumVector[i] = 0.0
+					}
+					insideCells.each { cell ->
+						def vec = getCombinedVector(cell)
+						for (int i = 0; i < vec.length; i++) {
+							sumVector[i] += vec[i]
+						}
+					}
+					def avgVector = sumVector.collect { it / insideCells.size() } as double[]
+					def outsideCells = allCells - insideCells
+					def distances = outsideCells.collect { cell ->
+						def vec = getCombinedVector(cell)
+						double d = new EuclideanDistance().compute(avgVector, vec)
+						[cell, d]
+					}
+					distances.sort { it[1] }
+					finalCells = distances.take(topN).collect { it[0] }
+					println "Combined filtering applied: using average vector from inside circle; selected ${finalCells.size()} cells outside."
+				}
+			} else {
+				// If no checkboxes selected, use spatial filtering only.
+				finalCells = spatialCells
+				println "No specific filtering selected; using spatial filtering only."
+			}
+
+			def greenClass = PathClassFactory.getPathClass("Neighborhood-Green")
+			finalCells.each { it.setPathClass(greenClass) }
+			def selectionModel = hierarchy.getSelectionModel()
+			selectionModel.clearSelection()
+			selectionModel.setSelectedObjects([targetCell] + finalCells, targetCell)
+			println "Neighborhood search complete. Found ${finalCells.size()} cells after filtering."
+		}
+
+		btnReset.setOnAction { event ->
+			if (circleAnnotationRef != null) {
+				hierarchy.removeObject(circleAnnotationRef, false)
+				circleAnnotationRef = null
+			}
+			hierarchy.getSelectionModel().clearSelection()
+			hierarchy.getDetectionObjects().findAll { it.isCell() }.each { it.setPathClass(null) }
+			tfRadius.setText("50")
+			tfTopN.setText("200")
+			markerCheckboxes.each { it.setSelected(false) }
+			[cbArea, cbPerimeter, cbCircularity, cbMaxCaliper, cbMinCaliper, cbEccentricity].each { it.setSelected(false) }
+			surroundCheckboxes.each { it.setSelected(false) }
+			println "Reset performed: cleared annotations, selection, and UI fields."
+		}
+
+		dialog.showAndWait()
+	}
+
+	private void loadH5Model(QuPathGUI qupath) {
+		println "Model Selection triggered. (Placeholder for .h5 loading logic)"
+		new Alert(AlertType.INFORMATION, "Model selection is not yet implemented.").showAndWait()
+	}
+
+	private static final Logger logger = Logger.getLogger(DemoGroovyExtension.class.getName())
+
+	// --- SQLITE-BASED CELL SEARCH ---
+	class SQLiteCellSearch {
+		private static final String DB_PATH = "D:/similarity_matrix.db"
+
+		static void runCellSearch(QuPathGUI qupath) {
+			new Thread({
+				Connection conn = null
+				PreparedStatement stmt = null
+				ResultSet rs = null
+
+				try {
+					Class.forName("org.sqlite.JDBC")
+					conn = DriverManager.getConnection("jdbc:sqlite:" + DB_PATH)
+
+					if (conn == null) {
+						Platform.runLater {
+							new Alert(AlertType.ERROR, "❌ Failed to connect to SQLite.").showAndWait()
+						}
+						return
+					}
+
+					def imageData = qupath.getImageData()
+					if (imageData == null) {
+						Platform.runLater {
+							new Alert(AlertType.WARNING, "No image data available.").showAndWait()
+						}
+						return
+					}
+
+					def hierarchy = imageData.getHierarchy()
+					def selectedCells = hierarchy.getSelectionModel().getSelectedObjects().findAll { it.isDetection() }
+					if (selectedCells.isEmpty()) {
+						Platform.runLater {
+							new Alert(AlertType.WARNING, "Please select a single cell before searching!").showAndWait()
+						}
+						return
+					}
+
+					def targetCell = selectedCells[0]
+					def roi = targetCell.getROI()
+					double pixelSize = imageData.getServer().getPixelCalibration().getPixelWidthMicrons()
+					double centroidX = roi.getCentroidX() * pixelSize
+					double centroidY = roi.getCentroidY() * pixelSize
+
+					println "📍 Selected Cell Centroid: X = ${centroidX}, Y = ${centroidY}"
+
+					stmt = conn.prepareStatement("""
+                        SELECT cell_index, x, y, 
+                        ((x - ?) * (x - ?) + (y - ?) * (y - ?)) AS distance
+                        FROM cell_coordinates
+                        WHERE x BETWEEN ? AND ? AND y BETWEEN ? AND ?
+                        ORDER BY distance ASC
+                        LIMIT 1;
+                    """)
+					stmt.setDouble(1, centroidX)
+					stmt.setDouble(2, centroidX)
+					stmt.setDouble(3, centroidY)
+					stmt.setDouble(4, centroidY)
+					stmt.setDouble(5, centroidX - 15)
+					stmt.setDouble(6, centroidX + 15)
+					stmt.setDouble(7, centroidY - 15)
+					stmt.setDouble(8, centroidY + 15)
+
+					rs = stmt.executeQuery()
+					if (!rs.next()) {
+						println "⚠️ No matching cell found in `cell_coordinates`."
+						Platform.runLater {
+							new Alert(AlertType.WARNING,
+									"⚠️ No matching cell found in SQLite!\n\n" +
+											"Selected Cell Centroid:\n" +
+											"X = ${centroidX} µm\n" +
+											"Y = ${centroidY} µm"
+							).showAndWait()
+						}
+						return
+					}
+					int cellIndex = rs.getInt("cell_index")
+					double matchedX = rs.getDouble("x")
+					double matchedY = rs.getDouble("y")
+
+					println "✅ Matched Cell Index: ${cellIndex} (X = ${matchedX}, Y = ${matchedY} µm)"
+
+					stmt = conn.prepareStatement("""
+                        SELECT ts.similar_cell_index, c.x, c.y
+                        FROM top_similarities ts
+                        JOIN cell_coordinates c ON ts.similar_cell_index = c.cell_index
+                        WHERE ts.cell_index = ?
+                        ORDER BY ts.similarity DESC
+                        LIMIT 100;
+                    """)
+					stmt.setInt(1, cellIndex)
+					rs = stmt.executeQuery()
+
+					def similarCells = []
+					while (rs.next()) {
+						similarCells.add([
+								"cell_index": rs.getInt("similar_cell_index"),
+								"x": rs.getDouble("x"),
+								"y": rs.getDouble("y")
+						])
+					}
+
+					String alertMessage = "📍 Selected Cell Centroid:\nX = ${centroidX} µm\nY = ${centroidY} µm\n\n"
+					alertMessage += "✅ Matched Cell in DB: Index = ${cellIndex}, X = ${matchedX}, Y = ${matchedY} µm\n\n"
+
+					if (similarCells.isEmpty()) {
+						println "⚠️ No similar cells found for cell_index ${cellIndex}."
+						alertMessage += "⚠️ No similar cells found for Cell Index ${cellIndex}."
+						Platform.runLater {
+							new Alert(AlertType.WARNING, alertMessage).showAndWait()
+						}
+						return
+					}
+
+					alertMessage += "✅ Found ${similarCells.size()} similar cells:\n"
+					similarCells.eachWithIndex { cellData, i ->
+						alertMessage += "🔹 Similar Cell ${i + 1}: Index = ${cellData["cell_index"]}, X = ${cellData["x"]} µm, Y = ${cellData["y"]} µm\n"
+					}
+
+					def redClass = PathClassFactory.getPathClass("Highlighted-Red")
+					def allCells = hierarchy.getDetectionObjects().findAll { it.isDetection() }
+
+					def matchingObjects = []
+					similarCells.each { cellData ->
+						def matchingCell = allCells.find {
+							it.getMeasurementList().getMeasurementValue("Cell Index") as Integer == cellData["cell_index"] as Integer
+						}
+						if (matchingCell) {
+							matchingCell.setPathClass(redClass)
+							matchingObjects.add(matchingCell)
+						}
+					}
+
+					def selectionModel = hierarchy.getSelectionModel()
+					selectionModel.clearSelection()
+					selectionModel.setSelectedObjects([targetCell] + matchingObjects, targetCell)
+
+					Platform.runLater {
+						new Alert(AlertType.INFORMATION, alertMessage).showAndWait()
+					}
+
+				} catch (ClassNotFoundException e) {
+					Platform.runLater {
+						new Alert(AlertType.ERROR, "❌ SQLite JDBC Driver Not Found. Ensure the JAR is included.").showAndWait()
+					}
+					e.printStackTrace()
+				} catch (SQLException e) {
+					Platform.runLater {
+						new Alert(AlertType.ERROR, "❌ SQL Error: ${e.message}").showAndWait()
+					}
+					e.printStackTrace()
+				} finally {
+					try {
+						if (rs != null) rs.close()
+						if (stmt != null) stmt.close()
+						if (conn != null) conn.close()
+					} catch (SQLException e) {
+						Platform.runLater {
+							new Alert(AlertType.WARNING, "⚠️ Failed to close SQLite resources: ${e.message}").showAndWait()
+						}
+					}
+				}
+			}).start()
+		}
+	}
+
+	// --- CSV-BASED CLUSTER SEARCH ---
+	private static void runCSVClusterSearch(QuPathGUI qupath) {
+		def levelOptions = ["level_1", "level_2", "level_3", "level_4", "level_5", "level_6"]
+		Dialog<String> dialog = new Dialog<>()
+		dialog.setTitle("CSV Cluster Search")
+		dialog.setHeaderText("Select the cluster column to use for search:")
+
+		ComboBox<String> comboBox = new ComboBox<>()
+		comboBox.getItems().addAll(levelOptions)
+		comboBox.setValue("level_1")
+
+		VBox dialogVBox = new VBox(10, new javafx.scene.control.Label("Cluster Level:"), comboBox)
+		dialogVBox.setPadding(new Insets(20))
+		dialog.getDialogPane().setContent(dialogVBox)
+
+		ButtonType runButtonType = new ButtonType("Run", ButtonData.OK_DONE)
+		dialog.getDialogPane().getButtonTypes().addAll(runButtonType, ButtonType.CANCEL)
+
+		dialog.setResultConverter { buttonType ->
+			if (buttonType == runButtonType) {
+				return comboBox.getValue()
+			}
+			return null
+		}
+
+		def result = dialog.showAndWait()
+		if (!result.isPresent()) {
+			println "User canceled CSV cluster search."
+			return
+		}
+		String chosenLevel = result.get()
+		println "User selected cluster column: " + chosenLevel
+
+		File csvFile = new File("C:/Users/saiki/OneDrive/Desktop/sai.csv")
+		if (!csvFile.exists()) {
+			new Alert(AlertType.ERROR, "Clustering CSV file not found.").showAndWait()
+			return
+		}
+
+		def rows = []
+		def header = []
+		int lineCount = 0
+		csvFile.eachLine { line ->
+			lineCount++
+			def parts = line.split(",")
+			if (lineCount == 1) {
+				header = parts
+			} else {
+				if (parts.size() < header.size()) {
+					def newParts = new String[header.size()]
+					for (int i = 0; i < header.size(); i++) {
+						newParts[i] = (i < parts.size()) ? parts[i] : ""
+					}
+					parts = newParts
+				}
+				def row = [:]
+				for (int i = 0; i < header.size(); i++) {
+					row[header[i]] = parts[i]
+				}
+				rows.add(row)
+			}
+		}
+		if (rows.size() > 0) {
+			println "First CSV row: " + rows[0]
+		}
+
+		def imageData = qupath.getImageData()
+		if (imageData == null) {
+			new Alert(AlertType.WARNING, "No image data available.").showAndWait()
+			return
+		}
+		def hierarchy = imageData.getHierarchy()
+		def selectedCells = hierarchy.getSelectionModel().getSelectedObjects().findAll { it.isCell() }
+		if (selectedCells.isEmpty()) {
+			new Alert(AlertType.WARNING, "Please select a cell before running CSV cluster search!").showAndWait()
+			return
+		}
+		def targetCell = selectedCells[0]
+		def targetROI = targetCell.getROI()
+		double targetX = targetROI.getCentroidX()
+		double targetY = targetROI.getCentroidY()
+		println "Target cell coordinates: (" + targetX + ", " + targetY + ")"
+
+		def closestRow = null
+		def minDist = Double.MAX_VALUE
+		rows.each { row ->
+			if (row['x'] && row['y']) {
+				double cx = row['x'] as double
+				double cy = row['y'] as double
+				double dist = Math.sqrt((cx - targetX) * (cx - targetX) + (cy - targetY) * (cy - targetY))
+				if (dist < minDist) {
+					minDist = dist
+					closestRow = row
+				}
+			}
+		}
+		if (closestRow == null) {
+			new Alert(AlertType.WARNING, "No matching cell found in clustering CSV!").showAndWait()
+			return
+		}
+
+		def clusterLabel = closestRow[chosenLevel]
+		println "Selected cell cluster " + chosenLevel + ": " + clusterLabel
+
+		def matchingRows = rows.findAll { row -> row[chosenLevel] == clusterLabel }
+		println "Found " + matchingRows.size() + " rows with " + chosenLevel + " = " + clusterLabel
+
+		def matchedCells = []
+		double tolerance = 10.0
+		def allCells = hierarchy.getDetectionObjects().findAll { it.isCell() }
+		allCells.each { cell ->
+			double cellX = cell.getROI().getCentroidX()
+			double cellY = cell.getROI().getCentroidY()
+			matchingRows.each { row ->
+				if (row['x'] && row['y']) {
+					double cx = row['x'] as double
+					double cy = row['y'] as double
+					double dx = cellX - cx
+					double dy = cellY - cy
+					if ((dx * dx + dy * dy) <= (tolerance * tolerance)) {
+						matchedCells.add(cell)
+						return
+					}
+				}
+			}
+		}
+		if (matchedCells.isEmpty()) {
+			new Alert(AlertType.WARNING, "No matching cells found in the image for cluster " + clusterLabel).showAndWait()
+			return
+		}
+
+		def clusterClass = getCurrentViewer().getPathClass("CSV-Cluster-" + chosenLevel + "-" + clusterLabel)
+		if (clusterClass == null) {
+			clusterClass = new PathClass("CSV-Cluster-" + chosenLevel + "-" + clusterLabel, javafx.scene.paint.Color.LIME, 1.0)
+		}
+		matchedCells.each { it.setPathClass(clusterClass) }
+
+		def selectionModel = hierarchy.getSelectionModel()
+		selectionModel.clearSelection()
+		selectionModel.setSelectedObjects(matchedCells, targetCell)
+		println "CSV Cluster search complete. Highlighted " + matchedCells.size() + " cells with " + chosenLevel + " = " + clusterLabel
+	}
+
+	// --- FEATURE EXTRACTION METHODS ---
+
+	// Extract morphological features.
+	private static double[] extractMorphologicalFeatures(PathObject cell) {
+		def measurementList = cell.getMeasurementList()
+		double area         = measurementList.getMeasurementValue("Cell: Area")         ?: 0.0
+		double perimeter    = measurementList.getMeasurementValue("Cell: Perimeter")    ?: 0.0
+		double circularity  = measurementList.getMeasurementValue("Cell: Circularity")  ?: 0.0
+		double maxCaliper   = measurementList.getMeasurementValue("Cell: Max caliper")  ?: 0.0
+		double minCaliper   = measurementList.getMeasurementValue("Cell: Min caliper")  ?: 0.0
+		double eccentricity = measurementList.getMeasurementValue("Cell: Eccentricity") ?: 0.0
+
+		return [area, perimeter, circularity, maxCaliper, minCaliper, eccentricity] as double[]
+	}
+
+	// Extract marker-based features based on tissue type.
+	private static double[] extractMarkerFeatures(PathObject cell, String tissueType) {
+		def measurementList = cell.getMeasurementList()
+		if(tissueType == "Brain") {
+			double dapiMean  = measurementList.getMeasurementValue("Cell: DAPI mean")  ?: 0.0
+			double neuNMean  = measurementList.getMeasurementValue("Cell: NeuN mean")  ?: 0.0
+			return [dapiMean, neuNMean] as double[]
+		} else if(tissueType == "Liver") {
+			def liverChannels = [
+					'Cell: DAPI mean',
+					'Cell: CD4 - Cy5 mean',
+					'Cell: PD1 - TRITC mean',
+					'Cell: FOXP3 - Cy5 mean',
+					'Cell: CD31 - TRITC mean',
+					'Cell: CD86 - Cy5 mean',
+					'Cell: B220 - TRITC mean',
+					'Cell: CD8 - Cy5 mean',
+					'Cell: aSMA - TRITC mean',
+					'Cell: PDL1 - Cy5 mean',
+					'Cell: Ki67 - TRITC mean',
+					'Cell: GZMB - Cy5 mean',
+					'Cell: FAP - Cy5 mean',
+					'Cell: CTLA4 - Cy5 mean',
+					'Cell: CD11c - Cy5 mean',
+					'Cell: CD3e - Cy5 mean',
+					'Cell: CD206 - Cy5 mean',
+					'Cell: F480 - Cy5 mean',
+					'Cell: CD11b - Cy5 mean',
+					'Cell: CD45 - Cy5 mean',
+					'Cell: Panck - Cy5 mean',
+					'Cell: Col1A1 - TRITC mean'
+			]
+			def features = []
+			liverChannels.each { channel ->
+				features << (measurementList.getMeasurementValue(channel) ?: 0.0)
+			}
+			return features as double[]
+		} else {
+			// Fallback to Brain.
+			double dapiMean  = measurementList.getMeasurementValue("Cell: DAPI mean")  ?: 0.0
+			double neuNMean  = measurementList.getMeasurementValue("Cell: NeuN mean")  ?: 0.0
+			return [dapiMean, neuNMean] as double[]
+		}
+	}
+
+	// Combine morphological and marker features.
+	private static double[] extractCombinedFeatures(PathObject cell, String tissueType) {
+		double[] morph  = extractMorphologicalFeatures(cell)
+		double[] marker = extractMarkerFeatures(cell, tissueType)
+		double[] combined = new double[morph.length + marker.length]
+		System.arraycopy(morph, 0, combined, 0, morph.length)
+		System.arraycopy(marker, 0, combined, morph.length, marker.length)
+		return combined
+	}
+}
