@@ -82,81 +82,6 @@ class DemoGroovyExtension implements QuPathExtension {
 		mainMenu.getItems().addAll(quickSearchMenu, comprehensiveMenu, resetRegionItem)
 	}
 
-
-
-
-
-	private static void runQuickSearch(QuPathGUI qupath, String searchType) {
-		def imageData = qupath.getImageData()
-		if (imageData == null) {
-			def alert =new Alert(AlertType.WARNING, "No image data available.")
-			alert.initOwner(qupath.getStage())
-			alert.showAndWait()
-			return
-		}
-		def hierarchy = imageData.getHierarchy()
-		def selectedCells = hierarchy.getSelectionModel().getSelectedObjects().findAll { it.isCell() }
-		if (selectedCells.isEmpty()) {
-			def alert =new Alert(AlertType.WARNING, "Please select a single cell before running the search!")
-			alert.initOwner(qupath.getStage())
-			alert.showAndWait()
-			return
-
-		}
-		def targetCell = selectedCells[0]
-		println "Selected cell: ID = ${targetCell.getID()}"
-
-		def cells = hierarchy.getDetectionObjects().findAll { it.isCell() }
-		double[] targetFeatures
-		switch (searchType) {
-			case "morphology":
-				targetFeatures = extractMorphologicalFeatures(targetCell)
-				break
-			case "marker":
-				targetFeatures = extractMarkerFeatures(targetCell)
-				break
-			case "combined":
-				targetFeatures = extractCombinedFeatures(targetCell)
-				break
-			default:
-				targetFeatures = extractMarkerFeatures(targetCell)
-		}
-
-		// Compute Euclidean distances from target cell to every other cell.
-		def distances = cells.findAll { it != targetCell }.collect { cell ->
-			double[] cellFeatures
-			switch (searchType) {
-				case "morphology":
-					cellFeatures = extractMorphologicalFeatures(cell)
-					break
-				case "marker":
-					cellFeatures = extractMarkerFeatures(cell)
-					break
-				case "combined":
-					cellFeatures = extractCombinedFeatures(cell)
-					break
-				default:
-					cellFeatures = extractMarkerFeatures(cell)
-			}
-			double dist = new EuclideanDistance().compute(targetFeatures, cellFeatures)
-			[cell, dist]
-		}
-
-		distances.sort { it[1] }
-		def topCells = distances.take(4000).collect { it[0] }
-		def allSelected = [targetCell] + topCells
-
-		def redClass = PathClass.fromString("Highlighted-Red")
-		allSelected.each { it.setPathClass(redClass) }
-
-		def selectionModel = hierarchy.getSelectionModel()
-		selectionModel.clearSelection()
-		selectionModel.setSelectedObjects(allSelected as List<PathObject>, targetCell as PathObject)
-
-
-		println "Quick search '${searchType}' complete. Highlighted ${topCells.size()} similar cells."
-	}
-
 	private static void runNeighborhoodSearch(QuPathGUI qupath) {
 		def imageData = qupath.getImageData()
 		if (imageData == null) {
@@ -477,124 +402,91 @@ class DemoGroovyExtension implements QuPathExtension {
 
 
 	private static void runMultiQuerySearch(QuPathGUI qupath) {
-			def imageData = qupath.getImageData()
-			if (imageData == null) {
-				new Alert(Alert.AlertType.WARNING, "No image data available.").show()
-				return
+		def imageData = qupath.getImageData()
+		if (imageData == null) {
+			new Alert(Alert.AlertType.WARNING, "No image data available.").show()
+			return
+		}
+
+		def hierarchy = imageData.getHierarchy()
+		def allCells = hierarchy.getDetectionObjects().findAll { it.isCell() }
+		if (allCells.isEmpty()) {
+			new Alert(Alert.AlertType.WARNING, "No cell detections found.").show()
+			return
+		}
+
+		def measurementNames = allCells[0].getMeasurementList().getMeasurementNames()
+		def markerLabels = measurementNames.findAll { it.startsWith("Cell: ") && it.endsWith(" mean") }
+				.collect { it.replace("Cell: ", "").replace(" mean", "") }
+		def markerCheckboxes = markerLabels.collect { new CheckBox(it) }
+		def cbMarkerSelectAll = new CheckBox("Select All Markers")
+		cbMarkerSelectAll.setOnAction { e ->
+			def v = ((CheckBox)e.getSource()).isSelected()
+			markerCheckboxes.each { it.setSelected(v) }
+		}
+		VBox markerBox = new VBox(5, new Label("Marker Selections:"), cbMarkerSelectAll, partitionCheckboxes(markerCheckboxes, 4))
+
+		def morphCbs = [
+				new CheckBox("Area"), new CheckBox("Perimeter"), new CheckBox("Circularity"),
+				new CheckBox("Max caliper"), new CheckBox("Min caliper"), new CheckBox("Eccentricity")
+		]
+		def cbMorphSelectAll = new CheckBox("Select All Morphological")
+		cbMorphSelectAll.setOnAction { e ->
+			def v = ((CheckBox)e.getSource()).isSelected()
+			morphCbs.each { it.setSelected(v) }
+		}
+		VBox morphBox = new VBox(5, new Label("Morphological Features:"), cbMorphSelectAll, partitionCheckboxes(morphCbs, 3))
+
+		def surroundCheckboxes = markerLabels.collect { new CheckBox(it) }
+		def cbSurroundSelectAll = new CheckBox("Select All Neighborhood Markers")
+		cbSurroundSelectAll.setOnAction { e ->
+			def v = ((CheckBox)e.getSource()).isSelected()
+			surroundCheckboxes.each { it.setSelected(v) }
+		}
+		VBox surroundBox = new VBox(5, new Label("Neighborhood Markers:"), cbSurroundSelectAll, partitionCheckboxes(surroundCheckboxes, 4))
+
+		def cbUnion        = new CheckBox("Union")
+		def cbIntersection = new CheckBox("Intersection")
+		def cbSubtract     = new CheckBox("Subtract")
+		def cbContrastive  = new CheckBox("Contrastive")
+		def cbCompetitive  = new CheckBox("Competitive Boost")
+
+		def allOps = [cbUnion, cbIntersection, cbSubtract, cbContrastive, cbCompetitive]
+		def enforceSingleOp = { changed -> allOps.each { if (it != changed) it.setSelected(false) } }
+		allOps.each { cb -> cb.selectedProperty().addListener({ obs, oldV, newV -> if (newV) enforceSingleOp(cb) } as ChangeListener) }
+		VBox opBox = new VBox(5, new Label("Operation:"), cbUnion, cbIntersection, cbSubtract, cbContrastive, cbCompetitive)
+
+		TextField tfTopN   = new TextField("4000")
+		TextField tfRadius = new TextField("50")
+		TextField tfWeight = new TextField("1.0")
+		HBox paramBox = new HBox(10, new Label("Top N:"), tfTopN, new Label("Radius (µm):"), tfRadius, new Label("Weight k:"), tfWeight)
+
+		ProgressBar progressBar = new ProgressBar(0.0)
+		progressBar.setPrefWidth(300)
+		Label progressLabel = new Label("Idle")
+
+		Button btnRun    = new Button("Run")
+		Button btnExport = new Button("Export CSV")
+		Button btnReset  = new Button("Reset")
+		Button btnClose  = new Button("Close")
+		final Stage dialogStage = new Stage()
+
+		def extractionMethod = { cell, allMap, radiusPx ->
+			def vec = []
+			markerCheckboxes.findAll { it.isSelected() }.each {
+				vec << (cell.getMeasurementList().getMeasurementValue("Cell: ${it.getText()} mean") ?: 0.0)
 			}
-
-			def hierarchy = imageData.getHierarchy()
-			def allCells = hierarchy.getDetectionObjects().findAll { it.isCell() }
-			if (allCells.isEmpty()) {
-				new Alert(Alert.AlertType.WARNING, "No cell detections found.").show()
-				return
+			morphCbs.findAll { it.isSelected() }.each {
+				vec << (cell.getMeasurementList().getMeasurementValue("Cell: ${it.getText()}") ?: 0.0)
 			}
-
-			// --- Marker selection UI ---
-			def measurementNames = allCells[0].getMeasurementList().getMeasurementNames()
-			def markerLabels = measurementNames.findAll { it.startsWith("Cell: ") && it.endsWith(" mean") }
-					.collect { it.replace("Cell: ", "").replace(" mean", "") }
-			def markerCheckboxes = markerLabels.collect { new CheckBox(it) }
-			def cbMarkerSelectAll = new CheckBox("Select All Markers")
-			cbMarkerSelectAll.setOnAction { e ->
-				def v = ((CheckBox)e.getSource()).isSelected()
-				markerCheckboxes.each { it.setSelected(v) }
-			}
-			VBox markerBox = new VBox(5,
-					new Label("Marker Selections:"),
-					cbMarkerSelectAll,
-					partitionCheckboxes(markerCheckboxes, 4)
-			)
-
-			// --- Morphological features UI ---
-			def morphCbs = [
-					new CheckBox("Area"), new CheckBox("Perimeter"), new CheckBox("Circularity"),
-					new CheckBox("Max caliper"), new CheckBox("Min caliper"), new CheckBox("Eccentricity")
-			]
-			def cbMorphSelectAll = new CheckBox("Select All Morphological")
-			cbMorphSelectAll.setOnAction { e ->
-				def v = ((CheckBox)e.getSource()).isSelected()
-				morphCbs.each { it.setSelected(v) }
-			}
-			VBox morphBox = new VBox(5,
-					new Label("Morphological Features:"),
-					cbMorphSelectAll,
-					partitionCheckboxes(morphCbs, 3)
-			)
-
-			// --- Neighborhood markers UI ---
-			def surroundCheckboxes = markerLabels.collect { new CheckBox(it) }
-			def cbSurroundSelectAll = new CheckBox("Select All Neighborhood Markers")
-			cbSurroundSelectAll.setOnAction { e ->
-				def v = ((CheckBox)e.getSource()).isSelected()
-				surroundCheckboxes.each { it.setSelected(v) }
-			}
-			VBox surroundBox = new VBox(5,
-					new Label("Neighborhood Markers:"),
-					cbSurroundSelectAll,
-					partitionCheckboxes(surroundCheckboxes, 4)
-			)
-
-			// --- Multi-query operations ---
-			def cbUnion        = new CheckBox("Union")
-			def cbIntersection = new CheckBox("Intersection")
-			def cbSubtract     = new CheckBox("Subtract")
-			def cbContrastive  = new CheckBox("Contrastive")
-			def cbCompetitive  = new CheckBox("Competitive Boost")
-
-			def allOps = [cbUnion, cbIntersection, cbSubtract, cbContrastive, cbCompetitive]
-			def enforceSingleOp = { changed ->
-				allOps.each { if (it != changed) it.setSelected(false) }
-			}
-			allOps.each { cb ->
-				cb.selectedProperty().addListener({ obs, oldV, newV ->
-					if (newV) enforceSingleOp(cb)
-				} as ChangeListener)
-			}
-			VBox opBox = new VBox(5,
-					new Label("Operation:"),
-					cbUnion, cbIntersection, cbSubtract, cbContrastive, cbCompetitive
-			)
-
-			// --- Parameters ---
-			TextField tfTopN   = new TextField("4000")
-			TextField tfRadius = new TextField("50")
-			TextField tfWeight = new TextField("1.0")
-			HBox paramBox = new HBox(10,
-					new Label("Top N:"), tfTopN,
-					new Label("Radius (µm):"), tfRadius,
-					new Label("Weight k:"), tfWeight
-			)
-
-			ProgressBar progressBar = new ProgressBar(0.0)
-			progressBar.setPrefWidth(300)
-			Label progressLabel = new Label("Idle")
-
-			Button btnRun    = new Button("Run")
-			Button btnExport = new Button("Export CSV")
-			Button btnReset  = new Button("Reset")
-			Button btnClose  = new Button("Close")
-			final Stage dialogStage = new Stage()
-
-			// --- Extract feature vector ---
-			def extractionMethod = { cell, allMap, radiusPx ->
-				def vec = []
-				markerCheckboxes.findAll { it.isSelected() }.each {
-					vec << (cell.getMeasurementList()
-							.getMeasurementValue("Cell: ${it.getText()} mean") ?: 0.0)
-				}
-				morphCbs.findAll { it.isSelected() }.each {
-					vec << (cell.getMeasurementList()
-							.getMeasurementValue("Cell: ${it.getText()}") ?: 0.0)
-				}
-				if (surroundCheckboxes.any { it.isSelected() }) {
-					def cx = cell.getROI().getCentroidX()
-					def cy = cell.getROI().getCentroidY()
-					def neighbors = []
-					def gx = (int)(cx / radiusPx)
-					def gy = (int)(cy / radiusPx)
-					for (dx in -1..1) {
-						for (dy in -1..1) {
+			if (surroundCheckboxes.any { it.isSelected() }) {
+				def cx = cell.getROI().getCentroidX()
+				def cy = cell.getROI().getCentroidY()
+				def neighbors = []
+				def gx = (int)(cx / radiusPx)
+				def gy = (int)(cy / radiusPx)
+				for (dx in -1..1) {
+					for (dy in -1..1) {
 						def key = "${gx+dx}_${gy+dy}"
 						allMap[key]?.each {
 							def d = it.getROI()
@@ -603,50 +495,34 @@ class DemoGroovyExtension implements QuPathExtension {
 							if (dx2*dx2 + dy2*dy2 <= radiusPx*radiusPx && it != cell)
 								neighbors << it
 						}
-						}
-					}
-					surroundCheckboxes.findAll { it.isSelected() }.each {
-						def vals = neighbors.collect { n ->
-							n.getMeasurementList()
-									.getMeasurementValue("Cell: ${it.getText()} mean") ?: 0.0
-						}
-						vec << (vals ? vals.sum()/vals.size() : 0.0)
 					}
 				}
-				return vec as double[]
+				surroundCheckboxes.findAll { it.isSelected() }.each {
+					def vals = neighbors.collect { n ->
+						n.getMeasurementList().getMeasurementValue("Cell: ${it.getText()} mean") ?: 0.0
+					}
+					vec << (vals ? vals.sum()/vals.size() : 0.0)
+				}
 			}
+			return vec as double[]
+		}
 
-			btnRun.setOnAction {
-				def selected = hierarchy.getSelectionModel()
-						.getSelectedObjects()
-						.findAll { it.isCell() }
-				if (!allOps.any { it.isSelected() }) {
-					new Alert(Alert.AlertType.WARNING, "Select an operation.").show(); return
-				}
-				if (cbContrastive.isSelected() && selected.size() != 2) {
-					new Alert(Alert.AlertType.WARNING, "Contrastive needs 2 cells.").show(); return
-				}
-				if (cbCompetitive.isSelected() && selected.size() != 3) {
-					new Alert(Alert.AlertType.WARNING,
-							"Competitive needs 3 cells.").show(); return
-				}
-				if (selected.size() < 2 && !cbCompetitive.isSelected()) {
-					new Alert(Alert.AlertType.WARNING,
-							"Select at least 2 cells.").show(); return
-				}
+		btnRun.setOnAction {
+			def selected = hierarchy.getSelectionModel().getSelectedObjects().findAll { it.isCell() }
+			if (!allOps.any { it.isSelected() }) { new Alert(Alert.AlertType.WARNING, "Select an operation.").show(); return }
+			if (cbContrastive.isSelected() && selected.size() != 2) { new Alert(Alert.AlertType.WARNING, "Contrastive needs 2 cells.").show(); return }
+			if (cbCompetitive.isSelected() && selected.size() != 3) { new Alert(Alert.AlertType.WARNING, "Competitive needs 3 cells.").show(); return }
+			if (selected.size() < 2 && !cbCompetitive.isSelected()) { new Alert(Alert.AlertType.WARNING, "Select at least 2 cells.").show(); return }
 
-				def limit       = tfTopN.getText().toInteger()
-				double radiusPx = tfRadius.getText().toDouble() /
-						imageData.getServer()
-								.getPixelCalibration()
-								.getPixelWidthMicrons()
-				double k        = tfWeight.getText().toDouble()
-				def useSpatial  = surroundCheckboxes.any { it.isSelected() }
+			def limit = tfTopN.getText().toInteger()
+			double radiusPx = tfRadius.getText().toDouble() / imageData.getServer().getPixelCalibration().getPixelWidthMicrons()
+			double k = tfWeight.getText().toDouble()
+			def useSpatial = surroundCheckboxes.any { it.isSelected() }
 
-				Task<Void> task = new Task<Void>() {
-					List<PathObject> resultCells = []
-					@Override protected Void call() {
-						// Spatial binning
+			Task<Void> task = new Task<Void>() {
+				List<PathObject> resultCells = []
+				@Override protected Void call() {
+					try {
 						def allMap = [:].withDefault { [] }
 						if (useSpatial) {
 							allCells.each {
@@ -655,170 +531,134 @@ class DemoGroovyExtension implements QuPathExtension {
 								allMap[key] << it
 							}
 						}
-						// Precompute vectors
+
 						def vectors = [:]
-						allCells.each {
-							vectors[it] = extractionMethod(it, allMap, radiusPx)
-						}
+						allCells.each { vectors[it] = extractionMethod(it, allMap, radiusPx) }
 						def distCalc = new EuclideanDistance()
 
 						if (cbCompetitive.isSelected()) {
-							// PriorityQueue<K,score> for top-K scoring
-							def pq = new PriorityQueue<SimpleEntry<PathObject,Double>>(limit,
-									{ a,b -> b.value <=> a.value } as Comparator)
+							def pq = new PriorityQueue<SimpleEntry<PathObject, Double>>(limit, { a, b -> b.value <=> a.value } as Comparator)
 							def vecT = vectors[selected[0]]
 							def vecP = vectors[selected[1]]
 							def vecN = vectors[selected[2]]
-
 							allCells.each { c ->
-								if (c==selected[0]) return
+								if (c == selected[0]) return
 								double dT = distCalc.compute(vecT, vectors[c])
 								double dP = distCalc.compute(vecP, vectors[c])
 								double dN = distCalc.compute(vecN, vectors[c])
-								double score = dT + k*dP - k*dN
-								if (pq.size()<limit) {
-									pq.add(new SimpleEntry<>(c,score))
-								} else if (score < pq.peek().value) {
-									pq.poll(); pq.add(new SimpleEntry<>(c,score))
-								}
+								double score = dT + k * dP - k * dN
+								if (pq.size() < limit) pq.add(new SimpleEntry<>(c, score))
+								else if (score < pq.peek().value) { pq.poll(); pq.add(new SimpleEntry<>(c, score)) }
 							}
-							// Extract sorted results
-							def arr = pq.toArray().toList()
-							arr.sort{ a,b -> a.value <=> b.value }
-							resultCells = arr.collect{ it.key }
-						}
-						else {
-							// For each query, find top-N via PQ
+							resultCells = pq.toArray().toList().sort { a, b -> a.value <=> b.value }.collect { it.key }
+						} else {
 							def neighborSets = []
 							selected.eachWithIndex { center, idx ->
-								updateMessage("Cell ${idx+1}/${selected.size()}")
+								updateMessage("Cell ${idx + 1}/${selected.size()}")
 								updateProgress(idx, selected.size())
-
-								def pq = new PriorityQueue<SimpleEntry<PathObject,Double>>(limit,
-										{ a,b -> b.value <=> a.value } as Comparator)
+								def pq = new PriorityQueue<SimpleEntry<PathObject, Double>>(limit, { a, b -> b.value <=> a.value } as Comparator)
 								def vecC = vectors[center]
 								allCells.each { c ->
-									if (c==center) return
+									if (c == center) return
 									double d = distCalc.compute(vecC, vectors[c])
-									if (pq.size()<limit) {
-										pq.add(new SimpleEntry<>(c,d))
-									} else if (d < pq.peek().value) {
-										pq.poll(); pq.add(new SimpleEntry<>(c,d))
-									}
+									if (pq.size() < limit) pq.add(new SimpleEntry<>(c, d))
+									else if (d < pq.peek().value) { pq.poll(); pq.add(new SimpleEntry<>(c, d)) }
 								}
-								def arr = pq.toArray().toList()
-								arr.sort{ a,b -> a.value <=> b.value }
-								neighborSets << (arr.collect{ it.key } as Set)
+								neighborSets << (pq.toArray().toList().sort { a, b -> a.value <=> b.value }.collect { it.key } as Set)
 							}
-							// Set-based operations
-							if      (cbUnion.isSelected())
-								resultCells = neighborSets.flatten()
-							else if (cbIntersection.isSelected())
-								resultCells = neighborSets.inject(neighborSets[0]){ a,b -> a.intersect(b) }.toList()
-							else if (cbSubtract.isSelected())
-								resultCells = neighborSets[0] - neighborSets[1..-1].flatten()
-							else if (cbContrastive.isSelected())
-								resultCells = neighborSets[0] - neighborSets[1]
+							if (cbSubtract.isSelected()) {
+								def base = neighborSets[0] as Set
+								def subtract = neighborSets[1..-1].flatten() as Set
+								resultCells = (base - subtract).toList().collect { it as PathObject }
+							} else if (cbUnion.isSelected()) {
+								resultCells = neighborSets.flatten().collect { it as PathObject }
+							} else if (cbIntersection.isSelected()) {
+								resultCells = neighborSets.inject(neighborSets[0]) { a, b -> a.intersect(b) }.toList().collect { it as PathObject }
+							} else if (cbContrastive.isSelected()) {
+								resultCells = (neighborSets[0] - neighborSets[1]).collect { it as PathObject }
+							}
 						}
 
-						// Tag & select
 						resultCells.each { it.setPathClass(PathClass.fromString("Multi-Query-Search")) }
 						Platform.runLater {
-							hierarchy.getSelectionModel().setSelectedObjects(resultCells,null)
+							try {
+								def castedResults = resultCells.collect { it as PathObject }
+								hierarchy.getSelectionModel().setSelectedObjects(castedResults, null)
+								progressLabel.textProperty().unbind()
+								progressLabel.setText("✅ Done: ${castedResults.size()} cells")
+							} catch (Exception ex) {
+								ex.printStackTrace()
+								progressLabel.textProperty().unbind()
+								progressLabel.setText("❌ UI Error: ${ex.message}")
+							}
+						}
+					} catch (Exception ex) {
+						ex.printStackTrace()
+						Platform.runLater {
 							progressLabel.textProperty().unbind()
-							progressLabel.setText("Done: ${resultCells.size()} cells")
+							progressLabel.setText("❌ Failed: ${ex.message}")
 						}
-						return null
+						throw ex
 					}
-				}
-
-				progressBar.progressProperty().bind(task.progressProperty())
-				progressLabel.textProperty().bind(task.messageProperty())
-				task.setOnSucceeded { e ->
-					// Unbind both the label and the bar, then show “Done”
-					progressLabel.textProperty().unbind()
-					progressLabel.setText("Done.")
-					progressBar.progressProperty().unbind()
-					progressBar.setProgress(1.0)
-				}
-
-				task.setOnFailed { e ->
-					progressLabel.textProperty().unbind()
-					progressLabel.setText("Failed.")
-					progressBar.progressProperty().unbind()
-					progressBar.setProgress(0.0)
-				}
-
-
-				Thread thread = new Thread(task)
-				thread.setDaemon(true)
-				thread.start()
-
-			}
-
-			// Reset
-			btnReset.setOnAction {
-				hierarchy.getDetectionObjects().findAll { it.isCell() }
-						.each { it.setPathClass(null) }
-				hierarchy.getSelectionModel().clearSelection()
-				progressLabel.textProperty().unbind()
-				progressLabel.setText("Reset")
-			}
-			// Export
-			btnExport.setOnAction {
-				def sel = hierarchy.getSelectionModel()
-						.getSelectedObjects()
-						.findAll { it.isCell() }
-				if (sel.isEmpty()) {
-					new Alert(Alert.AlertType.WARNING, "No cells to export.").show(); return
-				}
-				def chooser = new FileChooser()
-				chooser.setTitle("Export CSV")
-				chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("CSV", "*.csv"))
-				def file = chooser.showSaveDialog(dialogStage)
-				if (file) {
-					file.withPrintWriter { pw ->
-						pw.println("CentroidX,CentroidY")
-						sel.each {
-							def r = it.getROI()
-							pw.println("${r.getCentroidX()},${r.getCentroidY()}")
-						}
-					}
-					new Alert(Alert.AlertType.INFORMATION,
-							"Exported ${sel.size()} cells.").show()
+					return null
 				}
 			}
 
-			// Layout & show
-			VBox layout = new VBox(10,
-					markerBox, morphBox, surroundBox,
-					paramBox, opBox,
-					new HBox(10, btnRun, btnExport, btnReset, btnClose),
-					progressBar, progressLabel
-			)
-			layout.setPadding(new Insets(20))
-			dialogStage.setTitle("Multi-Query Search")
-			dialogStage.initOwner(qupath.getStage())
-			dialogStage.setScene(new Scene(layout))
-			dialogStage.show()
+			progressBar.progressProperty().bind(task.progressProperty())
+			progressLabel.textProperty().bind(task.messageProperty())
+			task.setOnSucceeded { progressLabel.textProperty().unbind(); progressLabel.setText("Done."); progressBar.progressProperty().unbind(); progressBar.setProgress(1.0) }
+			task.setOnFailed { progressLabel.textProperty().unbind(); progressLabel.setText("❌ Failed: ${task.getException()?.message}"); progressBar.progressProperty().unbind(); progressBar.setProgress(0.0); task.getException()?.printStackTrace() }
+			Thread thread = new Thread(task); thread.setDaemon(true); thread.start()
 		}
 
-		private static HBox partitionCheckboxes(List<CheckBox> checkboxes, int numCols) {
-			int per = (int)Math.ceil(checkboxes.size()/numCols)
-			def cols = []
-			(0..<numCols).each { i ->
-				int s = i*per, e = Math.min(s+per, checkboxes.size())
-				def vb = new VBox(5)
-				checkboxes.subList(s,e).each { vb.children.add(it) }
-				cols << vb
-			}
-			def hb = new HBox(10)
-			cols.each { hb.children.add(it) }
-			return hb
+		btnReset.setOnAction {
+			hierarchy.getDetectionObjects().findAll { it.isCell() }.each { it.setPathClass(null) }
+			hierarchy.getSelectionModel().clearSelection()
+			progressLabel.textProperty().unbind()
+			progressLabel.setText("Reset")
 		}
 
+		btnExport.setOnAction {
+			def sel = hierarchy.getSelectionModel().getSelectedObjects().findAll { it.isCell() }
+			if (sel.isEmpty()) { new Alert(Alert.AlertType.WARNING, "No cells to export.").show(); return }
+			def chooser = new FileChooser()
+			chooser.setTitle("Export CSV")
+			chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("CSV", "*.csv"))
+			def file = chooser.showSaveDialog(dialogStage)
+			if (file) {
+				file.withPrintWriter { pw ->
+					pw.println("CentroidX,CentroidY")
+					sel.each {
+						def r = it.getROI()
+						pw.println("${r.getCentroidX()},${r.getCentroidY()}")
+					}
+				}
+				new Alert(Alert.AlertType.INFORMATION, "Exported ${sel.size()} cells.").show()
+			}
+		}
 
-	private static final Logger logger = Logger.getLogger(DemoGroovyExtension.class.getName())
+		VBox layout = new VBox(10, markerBox, morphBox, surroundBox, paramBox, opBox, new HBox(10, btnRun, btnExport, btnReset, btnClose), progressBar, progressLabel)
+		layout.setPadding(new Insets(20))
+		dialogStage.setTitle("Multi-Query Search")
+		dialogStage.initOwner(qupath.getStage())
+		dialogStage.setScene(new Scene(layout))
+		dialogStage.show()
+	}
+
+	private static HBox partitionCheckboxes(List<CheckBox> checkboxes, int numCols) {
+		int per = (int)Math.ceil(checkboxes.size()/numCols)
+		def cols = []
+		(0..<numCols).each { i ->
+			int s = i*per, e = Math.min(s+per, checkboxes.size())
+			def vb = new VBox(5)
+			checkboxes.subList(s,e).each { vb.children.add(it) }
+			cols << vb
+		}
+		def hb = new HBox(10)
+		cols.each { hb.children.add(it) }
+		return hb
+	}
+
 
 	// --- CSV-BASED CLUSTER SEARCH ---
 	static void runCSVClusterSearch(QuPathGUI qupath) {
