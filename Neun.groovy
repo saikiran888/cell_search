@@ -734,17 +734,18 @@ class DemoGroovyExtension implements QuPathExtension {
 		})
 	}
 
-    static void runPhenotypeFinder(QuPathGUI qupath) {
-        File selectedCSV = null;
-        List<Map<String, String>> cachedRows = null;
-        def makeCoordKey = { double x, double y -> "${Math.round(x)}_${Math.round(y)}" };
-        def imageData = qupath.getImageData();
-        if (imageData == null) {
-            def alert = new Alert(Alert.AlertType.ERROR, "❌ No image open in QuPath.");
-            alert.initOwner(qupath.getStage());
-            alert.show();
-            return;
-        }
+	static void runPhenotypeFinder(QuPathGUI qupath) {
+		File selectedCSV = null;
+		List<Map<String, String>> cachedRows = null;
+		boolean hasNeuN = false;
+		Closure makeCoordKey = { double x, double y -> "${Math.round(x)}_${Math.round(y)}" };
+		def imageData = qupath.getImageData();
+		if (imageData == null) {
+			def alert = new Alert(Alert.AlertType.ERROR, "❌ No image open in QuPath.");
+			alert.initOwner(qupath.getStage());
+			alert.show();
+			return;
+		}
 		def allCells = imageData.getHierarchy().getDetectionObjects().findAll { it.isCell() }
 		if (allCells.isEmpty()) {
 			def alert = new Alert(AlertType.WARNING, "⚠️ No cell detections found.")
@@ -756,203 +757,230 @@ class DemoGroovyExtension implements QuPathExtension {
 
 		def markerLabels = measurementNames.findAll { it.startsWith("Cell: NeuN") && it.endsWith(" mean") }
 
-
 		// Decide which phenotype palette to use
-        Map<String, Color> phenotypeColors;
-        if (markerLabels) {
-            phenotypeColors = [
-                    "Glutamatergic"     : new Color(0, 206, 209),
-                    "GABAergic"         : new Color(0, 139, 139),
-                    "Cholinergic"       : new Color(255, 215, 0),
-                    "Catecholaminergic" : new Color(255, 140, 0),
-                    "Pericytes"         : new Color(139, 69, 19),
-                    "Endothelial cells" : new Color(0, 191, 255),
-                    "Oligodendrocytes"  : new Color(154, 205, 50),
-                    "Astrocytes"        : new Color(221, 160, 221),
-                    "Microglia"         : new Color(128, 0, 128),
-                    "Ependymal cells"   : new Color(173, 255, 47)
-            ];
-        } else {
-            phenotypeColors = [
-                    "Leukocytes"        : Color.RED,
-                    "B_cells"           : new Color(0, 128, 255),
-                    "Myeloid_cells"     : new Color(255, 165, 0),
-                    "Lymphocytes"       : Color.GREEN,
-                    "Helper_T_cells"    : new Color(255, 20, 147),
-                    "Helper_T_foxp3"    : new Color(186, 85, 211),
-                    "Helper_T_GZMB"     : new Color(0, 139, 139),
-                    "Cytotoxic_T_cells" : new Color(255, 69, 0),
-                    "Cytotoxic_T_Foxp3" : new Color(199, 21, 133),
-                    "NK_cells"          : new Color(128, 0, 128),
-                    "Type1_cells"       : new Color(0, 206, 209),
-                    "Dendritic_cells"   : new Color(70, 130, 180),
-                    "M1_macrophages"    : new Color(255, 140, 0),
-                    "M2_macrophages"    : new Color(139, 69, 19),
-                    "Regulatory_T"      : new Color(127, 255, 212),
-                    "Memory_T"          : new Color(173, 255, 47),
-                    "Stromal_COL1"      : new Color(154, 205, 50),
-                    "Stromal_CD31"      : new Color(0, 191, 255),
-                    "Stromal_aSMA"      : new Color(221, 160, 221),
-                    "Stromal_FAP"       : new Color(147, 112, 219),
-                    "Epithelial"        : new Color(255, 215, 0),
-                    "Proliferation"     : new Color(0, 255, 127)
-            ];
-        }
+		Map<String, Color> phenotypeColors;
+		if (markerLabels) {
+			phenotypeColors = [
+					"Glutamatergic"     : new Color(0, 206, 209),
+					"GABAergic"         : new Color(0, 139, 139),
+					"Cholinergic"       : new Color(255, 215, 0),
+					"Catecholaminergic" : new Color(255, 140, 0),
+					"Pericytes"         : new Color(139, 69, 19),
+					"Endothelial cells" : new Color(0, 191, 255),
+					"Oligodendrocytes"  : new Color(154, 205, 50),
+					"Astrocytes"        : new Color(221, 160, 221),
+					"Microglia"         : new Color(128, 0, 128),
+					"Ependymal cells"   : new Color(173, 255, 47)
+			];
+		} else {
+			phenotypeColors = [
+					"Leukocytes"        : Color.RED,
+					"B_cells"           : new Color(0, 128, 255),
+					"Myeloid_cells"     : new Color(255, 165, 0),
+					"Lymphocytes"       : Color.GREEN,
+					"Helper_T_cells"    : new Color(255, 20, 147),
+					"Helper_T_foxp3"    : new Color(186, 85, 211),
+					"Helper_T_GZMB"     : new Color(0, 139, 139),
+					"Cytotoxic_T_cells" : new Color(255, 69, 0),
+					"Cytotoxic_T_Foxp3" : new Color(199, 21, 133),
+					"NK_cells"          : new Color(128, 0, 128),
+					"Type1_cells"       : new Color(0, 206, 209),
+					"Dendritic_cells"   : new Color(70, 130, 180),
+					"M1_macrophages"    : new Color(255, 140, 0),
+					"M2_macrophages"    : new Color(139, 69, 19),
+					"Regulatory_T"      : new Color(127, 255, 212),
+					"Memory_T"          : new Color(173, 255, 47),
+					"Stromal_COL1"      : new Color(154, 205, 50),
+					"Stromal_CD31"      : new Color(0, 191, 255),
+					"Stromal_aSMA"      : new Color(221, 160, 221),
+					"Stromal_FAP"       : new Color(147, 112, 219),
+					"Epithelial"        : new Color(255, 215, 0),
+					"Proliferation"     : new Color(0, 255, 127)
+			];
+		}
 
-        //
-        // 1) Pop up a dialog to select & load the CSV…
-        //
-        Stage uploadStage = new Stage();
-        uploadStage.setTitle("Upload Phenotype CSV");
-        uploadStage.initModality(Modality.NONE);
-        uploadStage.initOwner(qupath.getStage());
+		// Upload CSV UI
+		Stage uploadStage = new Stage();
+		uploadStage.setTitle("Upload Phenotype CSV");
+		uploadStage.initModality(Modality.NONE);
+		uploadStage.initOwner(qupath.getStage());
 
-        TextField pathField = new TextField();
-        pathField.setEditable(false);
-        Button browseButton = new Button("Browse");
-        Button runUploadButton = new Button("Run");
-        Button cancelUploadButton = new Button("Cancel");
+		TextField pathField = new TextField();
+		pathField.setEditable(false);
+		Button browseButton = new Button("Browse");
+		Button runUploadButton = new Button("Run");
+		Button cancelUploadButton = new Button("Cancel");
 
-        HBox fileRow   = new HBox(10, pathField, browseButton);
-        HBox buttonRow = new HBox(10, runUploadButton, cancelUploadButton);
-        VBox layout    = new VBox(10, fileRow, buttonRow);
-        layout.setPadding(new Insets(20));
+		HBox fileRow   = new HBox(10, pathField, browseButton);
+		HBox buttonRow = new HBox(10, runUploadButton, cancelUploadButton);
+		VBox layout    = new VBox(10, fileRow, buttonRow);
+		layout.setPadding(new Insets(20));
 
-        uploadStage.setScene(new Scene(layout));
-        uploadStage.show();
+		uploadStage.setScene(new Scene(layout));
+		uploadStage.show();
 
-        FileChooser chooser = new FileChooser();
-        chooser.setTitle("Select CSV File");
-        chooser.getExtensionFilters().add(
-                new FileChooser.ExtensionFilter("CSV files", "*.csv")
-        );
+		FileChooser chooser = new FileChooser();
+		chooser.setTitle("Select CSV File");
+		chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("CSV files", "*.csv"));
 
-        browseButton.setOnAction {
-            File file = chooser.showOpenDialog(qupath.getStage());
-            if (file != null) {
-                selectedCSV = file;
-                pathField.setText(file.getAbsolutePath());
-            }
-        };
+		browseButton.setOnAction {
+			File file = chooser.showOpenDialog(qupath.getStage());
+			if (file != null) {
+				selectedCSV = file;
+				pathField.setText(file.getAbsolutePath());
+			}
+		}
 
-        cancelUploadButton.setOnAction {
-            uploadStage.close();
-        };
+		cancelUploadButton.setOnAction {
+			uploadStage.close();
+		}
 
-        runUploadButton.setOnAction {
-            if (selectedCSV == null || !selectedCSV.exists()) {
-                def alert = new Alert(Alert.AlertType.WARNING, "Please select a valid CSV file.");
-                alert.initOwner(qupath.getStage());
-                alert.show();
-                return;
-            }
+		runUploadButton.setOnAction {
+			if (selectedCSV == null || !selectedCSV.exists()) {
+				def alert = new Alert(Alert.AlertType.WARNING, "Please select a valid CSV file.");
+				alert.initOwner(qupath.getStage());
+				alert.show();
+				return;
+			}
 
-            // Read the CSV into a list of maps
-            cachedRows = [];
-            selectedCSV.withReader { reader ->
-                def lines = reader.readLines();
-                def headers = lines[0].split(",").collect { it.trim() };
-                lines[1..-1].each { line ->
-                    def parts = line.split(",");
-                    def row = [:];
-                    headers.eachWithIndex { h,i ->
-                        row[h] = (i < parts.size()) ? parts[i].trim() : "";
-                    }
-                    cachedRows << row;
-                }
-            }
+			// Read the CSV
+			cachedRows = []
+			selectedCSV.withReader { reader ->
+				def lines = reader.readLines()
+				def headers = lines[0].split(",").collect { it.trim() }
+				hasNeuN = headers.any { it == "NeuN" }
+				lines[1..-1].each { line ->
+					def parts = line.split(",")
+					def row = [:]
+					headers.eachWithIndex { h, i ->
+						row[h] = (i < parts.size()) ? parts[i].trim() : ""
+					}
+					cachedRows << row
+				}
+			}
 
-            uploadStage.close();
-            showPhenotypeDialog(qupath, imageData, cachedRows, makeCoordKey, phenotypeColors as Map<String, Color>);
-        }
-    }
+			uploadStage.close()
+			showPhenotypeDialog(qupath, imageData, cachedRows, makeCoordKey, phenotypeColors, hasNeuN)
+		}
+	}
 
-    static void showPhenotypeDialog(QuPathGUI qupath,
-                                    def imageData,
-                                    List<Map<String,String>> cachedRows,
-                                    Closure makeCoordKey,
-                                    Map<String,Color> phenotypeColors) {
-        Stage stage = new Stage();
-        stage.setTitle("Select Phenotype");
-        stage.initModality(Modality.NONE);
-        stage.initOwner(qupath.getStage());
+	static void showPhenotypeDialog(QuPathGUI qupath, def imageData, List<Map<String, String>> cachedRows, Closure makeCoordKey, Map<String, Color> phenotypeColors, boolean hasNeuN) {
+		Stage stage = new Stage();
+		stage.setTitle("Select Phenotype");
+		stage.initModality(Modality.NONE);
+		stage.initOwner(qupath.getStage());
 
-        ComboBox<String> phenotypeCombo = new ComboBox<>();
-        phenotypeCombo.getItems().addAll(phenotypeColors.keySet().sort());
-        phenotypeCombo.setValue(phenotypeColors.keySet().iterator().next());
+		ComboBox<String> phenotypeCombo = new ComboBox<>();
+		phenotypeCombo.getItems().addAll(phenotypeColors.keySet().sort());
+		phenotypeCombo.setValue(phenotypeColors.keySet().iterator().next());
 
-        ComboBox<String> tumorCombo = new ComboBox<>();
-        tumorCombo.getItems().addAll("Yes","No","Ignore");
-        tumorCombo.setValue("Ignore");
+		ComboBox<String> tumorCombo = new ComboBox<>();
+		tumorCombo.getItems().addAll("Yes", "No", "Ignore");
+		tumorCombo.setValue("Ignore");
+		tumorCombo.setDisable(hasNeuN);
+		Slider toleranceSlider = new Slider(1, 50, 10);
+		toleranceSlider.setShowTickLabels(true);
+		toleranceSlider.setShowTickMarks(true);
+		toleranceSlider.setMajorTickUnit(10);
+		toleranceSlider.setMinorTickCount(4);
+		toleranceSlider.setBlockIncrement(1);
+		toleranceSlider.setSnapToTicks(true);
+		toleranceSlider.setDisable(!hasNeuN);
 
-        Button runButton    = new Button("Run");
-        Button cancelButton = new Button("Close");
+		Button runButton    = new Button("Run");
+		Button cancelButton = new Button("Close");
 
-        GridPane grid = new GridPane();
-        grid.setHgap(10);  grid.setVgap(10);  grid.setPadding(new Insets(20));
-        grid.add(new Label("Phenotype:"), 0, 0);
-        grid.add(phenotypeCombo,        1, 0);
-        grid.add(new Label("Tumor Filter:"), 0, 1);
-        grid.add(tumorCombo,              1, 1);
-        grid.add(runButton,               0, 2);
-        grid.add(cancelButton,            1, 2);
+		GridPane grid = new GridPane();
+		grid.setHgap(10); grid.setVgap(10); grid.setPadding(new Insets(20));
+		grid.add(new Label("Phenotype:"),      0, 0); grid.add(phenotypeCombo,     1, 0);
+		grid.add(new Label("Tumor Filter:"),   0, 1); grid.add(tumorCombo,         1, 1);
+		grid.add(new Label("Tolerance (µm):"), 0, 2); grid.add(toleranceSlider,    1, 2);
+		grid.add(runButton,                    0, 3); grid.add(cancelButton,       1, 3);
 
-        stage.setScene(new Scene(grid));
-        stage.show();
+		stage.setScene(new Scene(grid));
+		stage.show();
 
-        cancelButton.setOnAction {
-            stage.close();
-        };
+		cancelButton.setOnAction {
+			stage.close();
+		}
 
-        runButton.setOnAction {
-            String phenotype  = phenotypeCombo.getValue();
-            String tumorFilter = tumorCombo.getValue();
+		runButton.setOnAction {
+			String phenotype = phenotypeCombo.getValue();
+			String tumorFilter = tumorCombo.getValue();
 
-            // 2) Filter the cached rows for this phenotype and tumor flag
-            def filtered = cachedRows.findAll { row ->
-                boolean phenoMatch = row[phenotype] in ["1","1.0"];
-                boolean tumorMatch = true;
-                if (tumorFilter == "Yes")  tumorMatch = row["tumor"]?.toLowerCase() in ["true","1"];
-                if (tumorFilter == "No")   tumorMatch = row["tumor"]?.toLowerCase() in ["false","0"];
-                return phenoMatch && tumorMatch;
-            };
+			def filtered = cachedRows.findAll { row ->
+				boolean phenoMatch = row[phenotype] in ["1", "1.0"];
+				boolean tumorMatch = true;
+				if (tumorFilter == "Yes") tumorMatch = row["tumor"]?.toLowerCase() in ["true", "1"];
+				if (tumorFilter == "No")  tumorMatch = row["tumor"]?.toLowerCase() in ["false", "0"];
+				return phenoMatch && tumorMatch;
+			};
 
-            // 3) Build a set of rounded-“X_Y” keys
-            def csvKeys = filtered.collect {
-                makeCoordKey( (it["Converted X µm"] as double), (it["Converted Y µm"] as double) )
-            } as Set;
+			def hierarchy = imageData.getHierarchy();
+			def allCells = hierarchy.getDetectionObjects().findAll { it.isCell() };
+			def matched = [] as Set;
 
-            // 4) Match against all cell detections
-            def hierarchy = imageData.getHierarchy();
-            def allCells  = hierarchy.getDetectionObjects().findAll{ it.isCell() };
-            def matched   = allCells.findAll {
-                def key = makeCoordKey(it.getROI().getCentroidX(), it.getROI().getCentroidY());
-                csvKeys.contains(key);
-            };
+			if (hasNeuN) {
+				double tolerance = toleranceSlider.getValue();
+				def binSize = tolerance;
+				def cellMap = [:].withDefault { [] }
+				allCells.each {
+					def x = it.getROI().getCentroidX()
+					def y = it.getROI().getCentroidY()
+					def key = "${(int)(x/binSize)}_${(int)(y/binSize)}"
+					cellMap[key] << it
+				}
+				filtered.each { row ->
+					if (row["centroid_x"] && row["centroid_y"]) {
+						double cx = row["centroid_x"] as double;
+						double cy = row["centroid_y"] as double;
+						int gx = (int)(cx / binSize);
+						int gy = (int)(cy / binSize);
+						for (dx in -1..1) {
+							for (dy in -1..1) {
+								def key = "${gx+dx}_${gy+dy}";
+								def group = cellMap[key];
+								group.each {
+									def dx2 = it.getROI().getCentroidX() - cx
+									def dy2 = it.getROI().getCentroidY() - cy
+									if ((dx2*dx2 + dy2*dy2) <= (tolerance*tolerance))
+										matched << it;
+								}
+							}
+						}
+					}
+				}
+			} else {
+				def csvKeys = filtered.collect {
+					makeCoordKey((it["Converted X µm"] as double), (it["Converted Y µm"] as double))
+				} as Set;
+				matched = allCells.findAll {
+					def key = makeCoordKey(it.getROI().getCentroidX(), it.getROI().getCentroidY())
+					csvKeys.contains(key)
+				} as Set
+			}
 
-            // 5) Re-classify them in QuPath
-            def color     = phenotypeColors.get(phenotype);
-            def pathClass = PathClass.fromString("Pheno: "+phenotype);
-            pathClass.setColor(
-                    (int)(color.getRed()*255),
-                    (int)(color.getGreen()*255),
-                    (int)(color.getBlue()*255)
-            );
+			def color = phenotypeColors.get(phenotype);
+			def pathClass = PathClass.fromString("Pheno: " + phenotype);
+			pathClass.setColor(
+					(int)(color.getRed() * 255),
+					(int)(color.getGreen() * 255),
+					(int)(color.getBlue() * 255)
+			);
+			matched.each { it.setPathClass(pathClass) };
+			Platform.runLater {
+				hierarchy.fireHierarchyChangedEvent(null);
+				qupath.getViewer().repaint();
+			}
+			hierarchy.getSelectionModel().setSelectedObjects(matched.toList(), null);
 
-            matched.each { it.setPathClass(pathClass) };
-            Platform.runLater {
-                hierarchy.fireHierarchyChangedEvent(null);
-                qupath.getViewer().repaint();
-            }
-            hierarchy.getSelectionModel().setSelectedObjects(matched, null);
-            qupath.getViewer().repaint();
+			def alert = new Alert(Alert.AlertType.INFORMATION,
+					"✅ Highlighted ${matched.size()} cells for '${phenotype}' (Tumor: ${tumorFilter})");
+			alert.initOwner(qupath.getStage());
+			alert.show();
+		}
+	}
 
-            def alert = new Alert(Alert.AlertType.INFORMATION,
-                    "✅ Highlighted ${matched.size()} cells for '${phenotype}' (Tumor: ${tumorFilter})");
-            alert.initOwner(qupath.getStage());
-            alert.show();
-        }
-    }
 	private static void resetRegionHighlights(QuPathGUI qupath) {
 		def imageData = qupath.getImageData()
 		if (imageData == null) {
