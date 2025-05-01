@@ -537,7 +537,7 @@ class DemoGroovyExtension implements QuPathExtension {
 		comboBox.getItems().addAll("level_1", "level_2", "level_3", "level_4", "level_5", "level_6")
 		comboBox.setValue("level_1")
 
-		Slider toleranceSlider = new Slider(1, 50, 10)
+		Slider toleranceSlider = new Slider(1, 50, 20)
 		toleranceSlider.setShowTickLabels(true); toleranceSlider.setShowTickMarks(true)
 		toleranceSlider.setMajorTickUnit(10); toleranceSlider.setMinorTickCount(4)
 
@@ -779,21 +779,21 @@ class DemoGroovyExtension implements QuPathExtension {
 					"Myeloid_cells"     : new Color(255, 165, 0),
 					"Lymphocytes"       : Color.GREEN,
 					"Helper_T_cells"    : new Color(255, 20, 147),
-					"Helper_T_foxp3"    : new Color(186, 85, 211),
-					"Helper_T_GZMB"     : new Color(0, 139, 139),
+					"Helper_T_foxp3_cells"    : new Color(186, 85, 211),
+					"Helper_T_GZMB_cells"     : new Color(0, 139, 139),
 					"Cytotoxic_T_cells" : new Color(255, 69, 0),
-					"Cytotoxic_T_Foxp3" : new Color(199, 21, 133),
+					"Cytotoxic_T_Foxp3_cells" : new Color(199, 21, 133),
 					"NK_cells"          : new Color(128, 0, 128),
-					"Type1_cells"       : new Color(0, 206, 209),
-					"Dendritic_cells"   : new Color(70, 130, 180),
-					"M1_macrophages"    : new Color(255, 140, 0),
-					"M2_macrophages"    : new Color(139, 69, 19),
-					"Regulatory_T"      : new Color(127, 255, 212),
-					"Memory_T"          : new Color(173, 255, 47),
-					"Stromal_COL1"      : new Color(154, 205, 50),
-					"Stromal_CD31"      : new Color(0, 191, 255),
-					"Stromal_aSMA"      : new Color(221, 160, 221),
-					"Stromal_FAP"       : new Color(147, 112, 219),
+					"Type1"       : new Color(0, 206, 209),
+					"Dentric cells"   : new Color(70, 130, 180),
+					"M1 macrophages"    : new Color(255, 140, 0),
+					"M2 macrophages"    : new Color(139, 69, 19),
+					"Regulatory T cells"      : new Color(127, 255, 212),
+					"Memory T cells"          : new Color(173, 255, 47),
+					"Stromal COLA1"      : new Color(154, 205, 50),
+					"Stromal CD31"      : new Color(0, 191, 255),
+					"Stromal aSMA"      : new Color(221, 160, 221),
+					"Stromal FAP"       : new Color(147, 112, 219),
 					"Epithelial"        : new Color(255, 215, 0),
 					"Proliferation"     : new Color(0, 255, 127)
 			];
@@ -864,146 +864,177 @@ class DemoGroovyExtension implements QuPathExtension {
 		}
 	}
 
-	static void showPhenotypeDialog(QuPathGUI qupath, def imageData, List<Map<String, String>> cachedRows, Closure makeCoordKey, Map<String, Color> phenotypeColors, boolean hasNeuN) {
-		Stage stage = new Stage();
-		stage.setTitle("Select Phenotype");
-		stage.initModality(Modality.NONE);
-		stage.initOwner(qupath.getStage());
+	static void showPhenotypeDialog(QuPathGUI qupath, def imageData,
+									List<Map<String, String>> cachedRows,
+									Closure makeCoordKey,
+									Map<String, Color> phenotypeColors,
+									boolean hasNeuN) {
+		// — Stage & basic controls —
+		Stage stage = new Stage()
+		stage.setTitle("Select Phenotype")
+		stage.initModality(Modality.NONE)
+		stage.initOwner(qupath.getStage())
 
-		ComboBox<String> phenotypeCombo = new ComboBox<>();
-		phenotypeCombo.getItems().addAll(phenotypeColors.keySet().sort());
-		phenotypeCombo.setValue(phenotypeColors.keySet().iterator().next());
+		ComboBox<String> phenotypeCombo = new ComboBox<>()
+		phenotypeCombo.getItems().addAll(phenotypeColors.keySet().sort())
+		phenotypeCombo.setValue(phenotypeCombo.getItems().get(0))
 
-		ComboBox<String> tumorCombo = new ComboBox<>();
-		tumorCombo.getItems().addAll("Yes", "No", "Ignore");
-		tumorCombo.setValue("Ignore");
-		tumorCombo.setDisable(hasNeuN);
-		Slider toleranceSlider = new Slider(1, 50, 10);
-		toleranceSlider.setShowTickLabels(true);
-		toleranceSlider.setShowTickMarks(true);
-		toleranceSlider.setMajorTickUnit(10);
-		toleranceSlider.setMinorTickCount(4);
-		toleranceSlider.setBlockIncrement(1);
-		toleranceSlider.setSnapToTicks(true);
-		toleranceSlider.setDisable(!hasNeuN);
-		// Cell status filter (only for NeuN)
-		ComboBox<String> statusCombo = new ComboBox<>();
-		statusCombo.setPromptText("Select status");
-		statusCombo.setDisable(!hasNeuN);
+		ComboBox<String> statusCombo = new ComboBox<>()
+		statusCombo.setPromptText("Select status")
 
-		// If NeuN, find all available status columns (excluding coordinates, markers)
-		if (hasNeuN) {
-			def statusOptions = new TreeSet<String>()
-			cachedRows[0].keySet().each { k ->
-				if (!(k.toLowerCase().contains("x") || k.toLowerCase().contains("y") || k.toLowerCase().contains("neun"))) {
-					statusOptions << k
-				}
-			}
-			statusCombo.getItems().addAll(statusOptions)
-		}
+		Slider toleranceSlider = new Slider(1, 50, 10)
+		toleranceSlider.setShowTickLabels(true)
+		toleranceSlider.setShowTickMarks(true)
+		toleranceSlider.setMajorTickUnit(10)
+		toleranceSlider.setMinorTickCount(4)
+		toleranceSlider.setBlockIncrement(1)
+		toleranceSlider.setSnapToTicks(true)
 
-		Button runButton    = new Button("Run");
-		Button cancelButton = new Button("Close");
+		Button runButton    = new Button("Run")
+		Button cancelButton = new Button("Close")
 
-		GridPane grid = new GridPane();
-		grid.setHgap(10); grid.setVgap(10); grid.setPadding(new Insets(20));
-		grid.add(new Label("Cell Type:"),      0, 0); grid.add(phenotypeCombo,     1, 0);
-		grid.add(new Label(hasNeuN ? "Cell Status:" : "Tumor Filter:"), 0, 1);
-		grid.add(hasNeuN ? statusCombo : tumorCombo, 1, 1);
-		grid.add(new Label("Tolerance (µm):"), 0, 2); grid.add(toleranceSlider,    1, 2);
-		grid.add(runButton,                    0, 3); grid.add(cancelButton,       1, 3);
+		// — 1. Build per-phenotype status lists —
+		def neuronStatuses = [
+				"Mature_neuron", "Newly_born_neuron", "Differentiating_neuron",
+				"Cholinergic_neuron", "Glutamatergic_neuron",
+				"Catecholaminergic_neuron", "Apoptotic_neuron"
+		]
+		def statusOptionsMap = [
+				"Glutamatergic"    : neuronStatuses,
+				"GABAergic"        : neuronStatuses,
+				"Cholinergic"      : neuronStatuses,
+				"Catecholaminergic": neuronStatuses,
+				"Astrocytes"       : [
+						"Resting_astrocyte", "Reactive_astrocyte",
+						"Mature_astrocyte", "Immature_astrocyte",
+						"Newly_born_astrocyte", "Apoptotic_astrocyte"
+				],
+				"Microglia"        : ["Proliferating_microglia","Apoptotic_microglia"],
+				"Oligodendrocytes" : [
+						"Mature_oligodendrocyte","Myelinating_oligodendrocyte",
+						"Non_myelinating_oligodendrocyte","Apoptotic_oligodendrocyte"
+				],
+				"Endothelial cells": ["Mature_endothelial","Reactive_endothelial","Proliferating_endothelial"]
+		]
 
-		stage.setScene(new Scene(grid));
-		stage.show();
-
-		cancelButton.setOnAction {
-			stage.close();
-		}
-
-		runButton.setOnAction {
-			String phenotype = phenotypeCombo.getValue();
-			String tumorFilter = tumorCombo.getValue();
-
-			def filtered = cachedRows.findAll { row ->
-				boolean phenoMatch = row[phenotype] in ["1", "1.0"];
-				if (!phenoMatch) return false;
-
-				if (hasNeuN) {
-					String selectedStatus = statusCombo.getValue();
-					if (!selectedStatus || !row.containsKey(selectedStatus))
-						return true; // no filter applied
-					return row[selectedStatus] in ["1", "1.0"];
-				} else {
-					boolean tumorMatch = true;
-					if (tumorFilter == "Yes") tumorMatch = row["tumor"]?.toLowerCase() in ["true", "1"];
-					if (tumorFilter == "No")  tumorMatch = row["tumor"]?.toLowerCase() in ["false", "0"];
-					return tumorMatch;
-				}
-			};
-
-
-			def hierarchy = imageData.getHierarchy();
-			def allCells = hierarchy.getDetectionObjects().findAll { it.isCell() };
-			def matched = [] as Set;
+		// — repopulate statusCombo depending on hasNeuN —
+		phenotypeCombo.setOnAction {
+			def pheno = phenotypeCombo.getValue()
+			statusCombo.getItems().clear()
 
 			if (hasNeuN) {
-				double tolerance = toleranceSlider.getValue();
-				def binSize = tolerance;
-				def cellMap = [:].withDefault { [] }
+				// Brain CSV: show detailed neuron/glia statuses
+				def opts = statusOptionsMap.getOrDefault(pheno, [])
+				statusCombo.getItems().add("Ignore")
+				statusCombo.getItems().addAll(opts)
+				statusCombo.setDisable(opts.isEmpty())
+			} else {
+				// Liver CSV: show tumor filter
+				statusCombo.getItems().addAll("Ignore", "Yes", "No")
+				statusCombo.setDisable(false)
+			}
+
+			statusCombo.setValue("Ignore")
+		}
+// Initialize on dialog open
+		phenotypeCombo.getOnAction().handle(null)
+
+
+		// — Layout —
+		GridPane grid = new GridPane()
+		grid.setHgap(10); grid.setVgap(10); grid.setPadding(new Insets(20))
+		grid.add(new Label("Cell Type:"),       0, 0); grid.add(phenotypeCombo,   1, 0)
+		Label statusLabel = new Label(hasNeuN ? "Cell Status:" : "Tumor Filter:")
+		grid.add(statusLabel,  0, 1)
+		grid.add(statusCombo,  1, 1)
+		grid.add(new Label("Tolerance (µm):"),  0, 2); grid.add(toleranceSlider,  1, 2)
+		grid.add(runButton,                     0, 3); grid.add(cancelButton,     1, 3)
+
+		stage.setScene(new Scene(grid))
+		stage.show()
+
+		// — 3. Run/Close actions —
+		cancelButton.setOnAction { stage.close() }
+
+		runButton.setOnAction {
+			String phenotype  = phenotypeCombo.getValue()
+			String cellStatus = statusCombo.getValue()
+
+			// 3a) Filter CSV rows by phenotype + status (Ignore = no additional filter)
+			def filtered = cachedRows.findAll { row ->
+				// must have the phenotype bit == 1
+				if (!(row[phenotype] in ["1","1.0"])) return false
+
+				if (hasNeuN) {
+					// Brain CSV: detailed status columns
+					if (cellStatus == "Ignore") return true
+					return row[cellStatus] in ["1","1.0"]
+				} else {
+					// Liver CSV: tumor filter
+					if (cellStatus == "Ignore") return true
+					if (cellStatus == "Yes") return row["tumor"]?.toLowerCase() in ["true","1"]
+					if (cellStatus == "No")  return row["tumor"]?.toLowerCase() in ["false","0"]
+					return true
+				}
+			}
+
+			// 3b) Existing matching logic unchanged:
+			def hierarchy = imageData.getHierarchy()
+			def allCells  = hierarchy.getDetectionObjects().findAll{ it.isCell() }
+			def matched   = [] as Set
+
+			if (hasNeuN) {
+				double tol = toleranceSlider.getValue()
+				def binSize = tol
+				def cellMap = [:].withDefault{ [] }
 				allCells.each {
 					def x = it.getROI().getCentroidX()
 					def y = it.getROI().getCentroidY()
-					def key = "${(int)(x/binSize)}_${(int)(y/binSize)}"
-					cellMap[key] << it
+					cellMap["${(int)(x/binSize)}_${(int)(y/binSize)}"] << it
 				}
 				filtered.each { row ->
 					if (row["centroid_x"] && row["centroid_y"]) {
-						double cx = row["centroid_x"] as double;
-						double cy = row["centroid_y"] as double;
-						int gx = (int)(cx / binSize);
-						int gy = (int)(cy / binSize);
+						double cx = row["centroid_x"] as double
+						double cy = row["centroid_y"] as double
+						int gx = (int)(cx/binSize), gy = (int)(cy/binSize)
 						for (dx in -1..1) {
 							for (dy in -1..1) {
-								def key = "${gx+dx}_${gy+dy}";
-								def group = cellMap[key];
-								group.each {
-									def dx2 = it.getROI().getCentroidX() - cx
-									def dy2 = it.getROI().getCentroidY() - cy
-									if ((dx2*dx2 + dy2*dy2) <= (tolerance*tolerance))
-										matched << it;
-								}
+							cellMap["${gx+dx}_${gy+dy}"].each {
+								def dx2 = it.getROI().getCentroidX() - cx
+								def dy2 = it.getROI().getCentroidY() - cy
+								if ((dx2*dx2 + dy2*dy2) <= tol*tol)
+									matched << it
+							}
 							}
 						}
 					}
 				}
 			} else {
-				def csvKeys = filtered.collect {
-					makeCoordKey((it["Converted X µm"] as double), (it["Converted Y µm"] as double))
-				} as Set;
-				matched = allCells.findAll {
-					def key = makeCoordKey(it.getROI().getCentroidX(), it.getROI().getCentroidY())
-					csvKeys.contains(key)
+				def csvKeys = filtered.collect{ makeCoordKey((it["Converted X µm"] as double),(it["Converted Y µm"] as double)) } as Set
+				matched = allCells.findAll{
+					csvKeys.contains(makeCoordKey(it.getROI().getCentroidX(), it.getROI().getCentroidY()))
 				} as Set
 			}
 
-			def color = phenotypeColors.get(phenotype);
-			def pathClass = PathClass.fromString("Pheno: " + phenotype);
+			// 3c) Color & select
+			def color = phenotypeColors.get(phenotype)
+			def pathClass = PathClass.fromString("Pheno: "+phenotype)
 			pathClass.setColor(
-					(int)(color.getRed() * 255),
-					(int)(color.getGreen() * 255),
-					(int)(color.getBlue() * 255)
-			);
-			matched.each { it.setPathClass(pathClass) };
-			Platform.runLater {
-				hierarchy.fireHierarchyChangedEvent(null);
-				qupath.getViewer().repaint();
+					(int)(color.red*255), (int)(color.green*255), (int)(color.blue*255)
+			)
+			matched.each{ it.setPathClass(pathClass) }
+			Platform.runLater{
+				hierarchy.fireHierarchyChangedEvent(null)
+				qupath.getViewer().repaint()
 			}
-			hierarchy.getSelectionModel().setSelectedObjects(matched.toList(), null);
+			hierarchy.getSelectionModel().setSelectedObjects(matched.toList(), null)
 
-			def alert = new Alert(Alert.AlertType.INFORMATION,
-					"✅ Highlighted ${matched.size()} cells for '${phenotype}' (Tumor: ${tumorFilter})");
-			alert.initOwner(qupath.getStage());
-			alert.show();
+			def info =new Alert(AlertType.INFORMATION,
+					"✅ Highlighted ${matched.size()} cells for '${phenotype}' (Status: ${cellStatus})"
+			)
+			info.initOwner(qupath.getStage())
+			info.showAndWait()
+
 		}
 	}
 
